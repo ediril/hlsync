@@ -21,9 +21,13 @@ v2 `rel="describedby"` link to the root `llms.txt` project summary.
 The existing hook mark is provided as SVG and 32-pixel PNG favicons, a
 multi-size root `favicon.ico`, and a 180-pixel Apple touch icon.
 
-The homepage includes a licensing and pricing section at `#pricing`, with free
-PolyForm Strict use and commercial licensing by inquiry. Commercial
-pricing is not published; the contact links open an email to Emrah Diril. The
-JSON-LD distinguishes the free offer from the commercial offer without assigning
-a price to the latter. The repository `LICENSE` defines the free permissions and grants no rights to
-modify or redistribute the software.
+The homepage includes a licensing and pricing section at `#pricing`, with use
+at no charge under PolyForm Strict 1.0.0 and commercial licensing by inquiry.
+The copy identifies noncommercial purposes, the listed personal uses without
+anticipated commercial application, and use by the listed organizations
+regardless of funding source or obligations resulting from funding.
+Commercial pricing is not published; the contact links open an email to Emrah
+Diril. The JSON-LD distinguishes the free offer from the commercial offer
+without assigning a price to the latter. The repository `LICENSE` governs;
+summaries grant no additional permissions. It grants no rights to modify,
+redistribute, or create works based on HLSync.

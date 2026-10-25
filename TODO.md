@@ -1,5 +1,9 @@
 # Work Queue
 
+- [x] Tighten README and website licensing summaries to match PolyForm Strict's
+  personal-use qualification, listed-organization permissions, and restrictions
+  on modification, redistribution, and works based on HLSync.
+
 - [x] Replace HLSync history with a fresh Strict-licensed source snapshot that
   calculates as `1.16.3`; preserve a recovery backup and verify release artifacts.
 

@@ -38,7 +38,7 @@ $structuredData = [
         [
             '@type' => 'Offer',
             'name' => 'PolyForm Strict license',
-            'description' => 'Free for personal and other uses permitted by PolyForm Strict 1.0.0.',
+            'description' => 'No charge for uses permitted by PolyForm Strict 1.0.0. Listed personal uses must have no anticipated commercial application. The license also permits use by listed organizations. No rights to modify, redistribute, or create works based on HLSync are granted.',
             'price' => '0',
             'priceCurrency' => 'USD',
             'url' => $repository . '/blob/main/LICENSE',
@@ -46,7 +46,7 @@ $structuredData = [
         [
             '@type' => 'Offer',
             'name' => 'Commercial license',
-            'description' => 'Commercial use outside the noncommercial license permissions requires a separate paid agreement. Contact emrah@diril.org for pricing.',
+            'description' => 'Commercial use outside the permissions of PolyForm Strict 1.0.0 requires a separate paid agreement before use. Contact emrah@diril.org for pricing.',
             'url' => ($canonicalUrl ?? $repository) . '#pricing',
         ],
     ],
@@ -291,19 +291,20 @@ function h(string $value): string
         <section class="section pricing" id="pricing" aria-labelledby="pricing-title">
             <div class="section-heading">
                 <p class="eyebrow">03 // LICENSING &amp; PRICING</p>
-                <h2 id="pricing-title">Free for personal use.<br>Paid for business.</h2>
-                <p>The same HLSync command-line tool, with a license for how you use it.</p>
+                <h2 id="pricing-title">Use under PolyForm Strict.<br>Commercial licensing available.</h2>
+                <p>PolyForm Strict 1.0.0 defines the uses available at no charge. Commercial use outside those permissions requires a separate paid agreement.</p>
             </div>
 
             <div class="pricing-grid">
                 <article class="license-card" aria-labelledby="noncommercial-title">
-                    <p class="license-label">PERSONAL &amp; NONCOMMERCIAL</p>
+                    <p class="license-label">POLYFORM STRICT 1.0.0</p>
                     <h3 id="noncommercial-title">Free</h3>
-                    <p class="license-description">For personal and other uses permitted by PolyForm Strict 1.0.0.</p>
+                    <p class="license-description">No charge for uses permitted by the license:</p>
                     <ul class="license-features">
-                        <li>Personal study and hobby projects</li>
-                        <li>Other noncommercial purposes</li>
-                        <li>Source available to read; no modification or redistribution rights granted</li>
+                        <li>Any noncommercial purpose</li>
+                        <li>Listed personal uses, such as study and hobby projects, without any anticipated commercial application</li>
+                        <li>Use by the organizations listed in the license</li>
+                        <li>No rights to modify, redistribute, or create works based on HLSync are granted</li>
                     </ul>
                     <a class="text-link" href="<?= h($repository) ?>/blob/main/LICENSE">Read the free license <span aria-hidden="true">↗</span></a>
                 </article>
@@ -322,7 +323,7 @@ function h(string $value): string
                 </article>
             </div>
 
-            <p class="licensing-note">Free use also includes the organizations expressly covered by PolyForm, such as charities, educational institutions, and government institutions. The <a href="<?= h($repository) ?>/blob/main/LICENSE">full license</a> defines the permitted uses. Unsure which applies? <a href="mailto:emrah@diril.org?subject=HLSync%20licensing%20question">Ask Emrah Diril</a>.</p>
+            <p class="licensing-note">PolyForm Strict expressly permits use by listed organizations, such as charitable organizations, educational institutions, and government institutions, regardless of funding source or obligations resulting from funding. The <a href="<?= h($repository) ?>/blob/main/LICENSE">full license</a> governs; this summary grants no additional permissions. Unsure which applies? <a href="mailto:emrah@diril.org?subject=HLSync%20licensing%20question">Ask Emrah Diril</a>.</p>
         </section>
     </main>
 

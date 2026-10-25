@@ -6,13 +6,13 @@ HLSync is for developers who want a safer, repeatable alternative to manual FTP 
 
 ## Licensing and pricing
 
-Personal and other uses permitted by PolyForm Strict 1.0.0 are free, including the organizations expressly covered by its terms. This license grants no modification or redistribution rights. Commercial use outside those permissions requires a separate paid agreement before use. Contact emrah@diril.org for commercial pricing and licensing questions.
+HLSync is source-available under PolyForm Strict 1.0.0. Use is free of charge for any noncommercial purpose, the listed personal uses without any anticipated commercial application, and use by the organizations listed in the license regardless of funding source or obligations resulting from funding. This license grants no rights to modify, redistribute, or create works based on HLSync. The full license governs; this summary grants no additional permissions. Commercial use outside those permissions requires a separate paid agreement before use. Contact emrah@diril.org for commercial pricing and licensing questions.
 
 ## Documentation
 
 - [README](https://github.com/ediril/hlsync/blob/main/README.md): Installation, configuration, synchronization rules, traversal, diff, push, pull, and transfer guarantees.
 - [Changelog](https://github.com/ediril/hlsync/blob/main/CHANGELOG.md): Current version history and completed behavior changes.
-- [License](https://github.com/ediril/hlsync/blob/main/LICENSE): Free for personal and other uses permitted by PolyForm Strict 1.0.0. Commercial use outside those permissions requires a separate paid license. Contact emrah@diril.org for pricing.
+- [License](https://github.com/ediril/hlsync/blob/main/LICENSE): Full PolyForm Strict 1.0.0 terms defining permitted uses and restrictions. Commercial use outside those permissions requires a separate paid license. Contact emrah@diril.org for pricing.
 
 ## Source
 
