@@ -1,0 +1,823 @@
+from __future__ import annotations
+
+import io
+import os
+import ssl
+import subprocess
+import threading
+
+import pytest
+from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.handlers import TLS_FTPHandler
+from pyftpdlib.servers import FTPServer
+
+from hlsync.cli import run
+from hlsync.comparison import build_comparison
+from hlsync.config import (
+    ApplicationConfiguration,
+    ConfigurationStore,
+    ProfileConfiguration,
+)
+from hlsync.gitignore import GitIgnores
+from hlsync.rules import RuleSet, SyncRule
+from hlsync.selection import FileSelector, FileSelectorSet
+from hlsync.snapshot import TreeEntry, TreeSnapshot, snapshot_local
+from hlsync.transfer import TransferIssue, TransferOperation, execute_transfer
+from hlsync.transport import (
+    ExplicitFTPSTransport,
+    PathOperationError,
+    TransportError,
+)
+
+
+def test_missing_credentials_are_reported(monkeypatch) -> None:
+    monkeypatch.delenv("PROD_FTPS_USERNAME", raising=False)
+    monkeypatch.delenv("PROD_FTPS_PASSWORD", raising=False)
+    transport = ExplicitFTPSTransport(
+        ProfileConfiguration(
+            host="localhost",
+            remote_root="/",
+            username_env="PROD_FTPS_USERNAME",
+            password_env="PROD_FTPS_PASSWORD",
+        )
+    )
+
+    with pytest.raises(TransportError, match="PROD_FTPS_USERNAME.*PROD_FTPS_PASSWORD"):
+        transport.connect()
+
+
+@pytest.fixture
+def tls_ftp_server(tmp_path):
+    certificate = tmp_path / "certificate.pem"
+    private_key = tmp_path / "private-key.pem"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            os.fspath(private_key),
+            "-out",
+            os.fspath(certificate),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    root = tmp_path / "ftp-root"
+    root.mkdir()
+    authorizer = DummyAuthorizer()
+    authorizer.add_user(
+        "prod-user",
+        "prod-password",
+        os.fspath(root),
+        perm="elradfmwMT",
+    )
+
+    class Handler(TLS_FTPHandler):
+        pass
+
+    Handler.authorizer = authorizer
+    Handler.certfile = os.fspath(certificate)
+    Handler.keyfile = os.fspath(private_key)
+    Handler.tls_control_required = True
+    Handler.tls_data_required = True
+
+    server = FTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"timeout": 0.05, "blocking": True, "handle_exit": False},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield server.socket.getsockname()[1], certificate, root
+    finally:
+        server.ioloop.call_later(0, server.close_all)
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_connects_with_verified_explicit_tls_and_protected_data_channel(
+    tls_ftp_server, monkeypatch
+) -> None:
+    port, certificate, root = tls_ftp_server
+    assets = root / "assets"
+    cache = root / "cache"
+    opaque = root / "opaque"
+    protected = root / "protected"
+    assets.mkdir()
+    cache.mkdir()
+    opaque.mkdir()
+    protected.mkdir()
+    (assets / "logo.svg").write_text("logo", encoding="utf-8")
+    (cache / "index.bin").write_bytes(b"ignored")
+    (cache / "keep.bin").write_bytes(b"included")
+    (opaque / "hidden.bin").write_bytes(b"ignored")
+    (protected / "remote-only.bin").write_bytes(b"protected")
+    (root / "debug.log").write_text("ignored", encoding="utf-8")
+    local_root = root.parent / "local-root"
+    local_root.mkdir()
+    (local_root / "local.txt").write_text("local", encoding="utf-8")
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    transport = ExplicitFTPSTransport(
+        ProfileConfiguration(
+            host="localhost",
+            remote_root="/",
+            port=port,
+            username_env="PROD_FTPS_USERNAME",
+            password_env="PROD_FTPS_PASSWORD",
+        ),
+        ssl_context=context,
+    )
+    rules = RuleSet(
+        (
+            SyncRule(1, "exclude", "cache/**"),
+            SyncRule(2, "exclude", "*.log"),
+            SyncRule(3, "include", "cache/keep.bin"),
+            SyncRule(4, "exclude", "opaque/**"),
+            SyncRule(5, "exclude", "protected", "remote"),
+        )
+    )
+    with transport:
+        # The fixture refuses unprotected data connections, so recursive MLSD
+        # success proves that PROT P was negotiated rather than merely called.
+        counts = []
+        snapshot = transport.snapshot(
+            rules, directory_counts=lambda done, total: counts.append((done, total))
+        )
+        assert counts == [(0, 1), (1, 3), (2, 3), (3, 3)]
+        transport._use_mlsd = False
+        assert transport.snapshot(rules) == snapshot
+        transport._use_mlsd = True
+        assert [(entry.path, entry.kind) for entry in snapshot.entries] == [
+            ("assets", "directory"),
+            ("assets/logo.svg", "file"),
+            ("cache/keep.bin", "file"),
+            ("protected", "directory"),
+        ]
+        shallow_diagnostic = transport.snapshot(
+            rules,
+            include_excluded=True,
+        )
+        assert "opaque" in {
+            entry.path for entry in shallow_diagnostic.entries
+        }
+        assert "opaque/hidden.bin" not in {
+            entry.path for entry in shallow_diagnostic.entries
+        }
+        diagnostic = transport.snapshot(
+            rules,
+            include_excluded=True,
+            traverse_excluded=True,
+        )
+        assert {
+            entry.path: entry.excluded for entry in diagnostic.entries
+        } == {
+            "assets": False,
+            "assets/logo.svg": False,
+            "cache": True,
+            "cache/index.bin": True,
+            "cache/keep.bin": False,
+            "debug.log": True,
+            "opaque": True,
+            "opaque/hidden.bin": True,
+            "protected": False,
+        }
+        local = snapshot_local(local_root, RuleSet())
+        comparison = {
+            entry.path: entry
+            for entry in build_comparison(local, snapshot).entries
+        }
+        assert comparison["local.txt"].action == "upload"
+        assert comparison["assets/logo.svg"].action == "skip"
+        assert comparison["protected"].action == "excluded"
+        assert "protected/remote-only.bin" not in comparison
+
+    assert transport._client is None
+
+
+def test_rejects_an_untrusted_server_certificate(tls_ftp_server, monkeypatch) -> None:
+    port, _, _ = tls_ftp_server
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    transport = ExplicitFTPSTransport(
+        ProfileConfiguration(
+            host="localhost",
+            remote_root="/",
+            port=port,
+            username_env="PROD_FTPS_USERNAME",
+            password_env="PROD_FTPS_PASSWORD",
+        )
+    )
+
+    with pytest.raises(TransportError, match="certificate verify failed"):
+        transport.connect()
+
+
+def test_rejects_an_inaccessible_profile_root(tls_ftp_server, monkeypatch) -> None:
+    port, certificate, _ = tls_ftp_server
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    transport = ExplicitFTPSTransport(
+        ProfileConfiguration(
+            host="localhost",
+            remote_root="/missing",
+            port=port,
+            username_env="PROD_FTPS_USERNAME",
+            password_env="PROD_FTPS_PASSWORD",
+        ),
+        ssl_context=context,
+    )
+
+    with pytest.raises(TransportError, match="No such file or directory"):
+        transport.connect()
+
+
+@pytest.mark.parametrize("timestamp_command", ["MFMT", "MDTM"])
+def test_upload_verifies_timestamp_independently_of_mfmt_response(
+    tmp_path, timestamp_command,
+) -> None:
+    source_path = tmp_path / "asset.txt"
+    source_path.write_text("asset", encoding="utf-8")
+    modified_ns = 1_700_000_000_000_000_000
+    os.utime(source_path, ns=(modified_ns, modified_ns))
+
+    class TimestampClient:
+        def __init__(self, mdtm_timestamp):
+            self.mdtm_timestamp = mdtm_timestamp
+            self.staged_path = None
+            self.commands = []
+            self.deleted = []
+            self.renamed = []
+
+        def storbinary(self, command, source, callback=None):
+            self.staged_path = command.removeprefix("STOR ")
+            assert source.read() == b"asset"
+            if callback is not None:
+                callback(b"asset")
+
+        def size(self, path):
+            assert path == self.staged_path
+            return 5
+
+        def sendcmd(self, command):
+            self.commands.append(command)
+            if command.startswith(f"{timestamp_command} 20231114221320 "):
+                return "213 UTIME OK"
+            assert command == f"MDTM {self.staged_path}"
+            return f"213 {self.mdtm_timestamp}"
+
+        def delete(self, path):
+            self.deleted.append(path)
+
+        def rename(self, source, destination):
+            self.renamed.append((source, destination))
+
+    transport = ExplicitFTPSTransport(
+        ProfileConfiguration(host="ftp.example.com", remote_root="/")
+    )
+    matching = TimestampClient("20231114221320")
+    transport._timestamp_command = timestamp_command
+    transport._client = matching
+    byte_updates = []
+
+    def uploaded_bytes(count):
+        assert matching.renamed == []
+        byte_updates.append(count)
+
+    with source_path.open("rb") as source:
+        transport.upload_file(
+            source,
+            "asset.txt",
+            size=5,
+            modified_ns=modified_ns,
+            replace=False,
+            byte_progress=uploaded_bytes,
+        )
+    assert byte_updates == [5]
+    assert matching.commands == [
+        f"{timestamp_command} 20231114221320 {matching.staged_path}",
+        f"MDTM {matching.staged_path}",
+    ]
+    assert matching.renamed == [(matching.staged_path, "asset.txt")]
+
+    mismatched = TimestampClient("20231114221321")
+    transport._client = mismatched
+    with source_path.open("rb") as source:
+        with pytest.raises(TransportError, match="verification failed"):
+            transport.upload_file(
+                source,
+                "asset.txt",
+                size=5,
+                modified_ns=modified_ns,
+                replace=False,
+            )
+    assert mismatched.deleted == [mismatched.staged_path]
+    assert mismatched.renamed == []
+
+
+def test_push_artifact_recovery_cleans_staging_and_restores_missing_destination(
+    monkeypatch,
+) -> None:
+    token = "a" * 32
+    upload = f"templates/.about.php.hlsync-upload-{token}"
+    old_backup = f"templates/.about.php.hlsync-backup-{token}"
+    missing_backup = f"templates/.missing.php.hlsync-backup-{'b' * 32}"
+
+    def file_entry(path):
+        return TreeEntry(
+            path,
+            "file",
+            size=5,
+            modified_ns=1_700_000_000_000_000_000,
+            timestamp_precision_ns=1_000_000_000,
+        )
+
+    transport = ExplicitFTPSTransport(
+        ProfileConfiguration(host="ftp.example.com", remote_root="/")
+    )
+
+    class RecoveryClient:
+        def __init__(self):
+            self.deleted = []
+            self.renamed = []
+
+        def delete(self, path):
+            self.deleted.append(path)
+
+        def rename(self, source, destination):
+            self.renamed.append((source, destination))
+
+    client = RecoveryClient()
+    transport._client = client
+    listed_directories = []
+
+    def list_directory(relative_directory, rules):
+        assert rules == RuleSet()
+        directory = relative_directory.as_posix()
+        listed_directories.append(directory)
+        if directory == ".":
+            return TreeSnapshot(
+                (
+                    TreeEntry("templates", "directory"),
+                    TreeEntry("unrelated", "directory"),
+                )
+            )
+        assert directory == "templates"
+        if listed_directories.count("templates") == 1:
+            return TreeSnapshot(
+                (
+                    file_entry("templates/about.php"),
+                    file_entry(upload),
+                    file_entry(old_backup),
+                    file_entry(missing_backup),
+                )
+            )
+        return TreeSnapshot(
+            (
+                file_entry("templates/about.php"),
+                file_entry("templates/missing.php"),
+            )
+        )
+
+    monkeypatch.setattr(transport, "list_directory", list_directory)
+    preview_messages = []
+    previewed_directories = []
+    preview = transport.snapshot(
+        RuleSet(),
+        FileSelector("templates/*"),
+        artifact_preview=preview_messages.append,
+        directory_progress=previewed_directories.append,
+    )
+
+    assert listed_directories == [".", "templates"]
+    assert [path.as_posix() for path in previewed_directories] == [
+        ".",
+        "templates",
+    ]
+    assert client.deleted == []
+    assert client.renamed == []
+    assert [entry.path for entry in preview.entries] == [
+        "templates/about.php",
+        "templates/missing.php",
+    ]
+    assert preview_messages == [
+        f"Would remove abandoned upload '{upload}'.",
+        f"Would remove old backup '{old_backup}'.",
+        "Would restore interrupted replacement 'templates/missing.php'.",
+    ]
+
+    listed_directories.clear()
+    messages = []
+    transport.snapshot(
+        RuleSet(),
+        FileSelector("templates/*"),
+        artifact_recovery=messages.append,
+    )
+
+    assert listed_directories == [".", "templates", "templates"]
+    assert client.deleted == [upload, old_backup]
+    assert client.renamed == [(missing_backup, "templates/missing.php")]
+    assert messages == [
+        f"Removed abandoned upload '{upload}'.",
+        f"Removed old backup '{old_backup}'.",
+        "Restored interrupted replacement 'templates/missing.php'.",
+    ]
+
+
+def test_selected_push_pull_and_remote_prune_use_the_shared_plan(
+    tls_ftp_server, tmp_path, monkeypatch
+) -> None:
+    port, certificate, remote_root = tls_ftp_server
+    local_root = tmp_path / "local"
+    nested = local_root / "nested"
+    nested.mkdir(parents=True)
+    selected = nested / "selected.txt"
+    selected.write_text("local version", encoding="utf-8")
+    local_timestamp_ns = 1_700_000_000_000_000_000
+    os.utime(selected, ns=(local_timestamp_ns, local_timestamp_ns))
+    (local_root / "unselected.txt").write_text("stay local", encoding="utf-8")
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    transport = ExplicitFTPSTransport(
+        ProfileConfiguration(host="localhost", remote_root="/", port=port),
+        ssl_context=context,
+    )
+    progress = []
+
+    with transport:
+        rules = RuleSet()
+        unrelated = remote_root / "unrelated" / "deep"
+        unrelated.mkdir(parents=True)
+        (unrelated / "ignored.txt").write_text("ignored", encoding="utf-8")
+        (remote_root / "top.txt").write_text("top", encoding="utf-8")
+        assert transport._client is not None
+        original_mlsd = transport._client.mlsd
+        listed_directories = []
+
+        def tracked_mlsd(path="", facts=()):
+            listed_directories.append(path)
+            return original_mlsd(path, facts)
+
+        transport._client.mlsd = tracked_mlsd
+        transport.snapshot(rules, FileSelector("*"))
+        assert listed_directories == [""]
+
+        selector = FileSelector("nested/*.txt")
+        local = snapshot_local(local_root, rules, selector)
+        remote = transport.snapshot(rules, selector)
+        push = build_comparison(
+            local,
+            remote,
+            selector=selector,
+        )
+        sent_bytes = []
+
+        def track_bytes(count):
+            assert not (remote_root / "nested" / "selected.txt").exists()
+            sent_bytes.append(count)
+
+        execute_transfer(
+            push,
+            local_root=local_root,
+            local=local,
+            remote=remote,
+            transport=transport,
+            progress=progress.append,
+            byte_progress=track_bytes,
+        )
+        assert sum(sent_bytes) == len(b"local version")
+        assert (remote_root / "nested" / "selected.txt").read_text() == (
+            "local version"
+        )
+        assert not (remote_root / "unselected.txt").exists()
+        remote = transport.snapshot(rules, selector)
+        after_push = build_comparison(
+            snapshot_local(local_root, rules, selector),
+            remote,
+            selector=selector,
+        )
+        assert after_push.entries[0].action == "unchanged"
+
+        remote_selected = remote_root / "nested" / "selected.txt"
+        remote_selected.write_text("remote version", encoding="utf-8")
+        remote_timestamp_ns = local_timestamp_ns + 10_000_000_000
+        os.utime(
+            remote_selected,
+            ns=(remote_timestamp_ns, remote_timestamp_ns),
+        )
+        local = snapshot_local(local_root, rules, selector)
+        remote = transport.snapshot(rules, selector)
+        pull = build_comparison(
+            local,
+            remote,
+            direction="pull",
+            selector=selector,
+        )
+        execute_transfer(
+            pull,
+            local_root=local_root,
+            local=local,
+            remote=remote,
+            transport=transport,
+            progress=progress.append,
+        )
+        assert selected.read_text(encoding="utf-8") == "remote version"
+        assert selected.stat().st_mtime_ns == remote_timestamp_ns
+
+        orphan = remote_root / "orphan.txt"
+        orphan.write_text("delete me", encoding="utf-8")
+        orphan_selector = FileSelector("orphan.txt")
+        local = snapshot_local(local_root, rules, orphan_selector)
+        remote = transport.snapshot(rules, orphan_selector)
+        prune = build_comparison(
+            local,
+            remote,
+            prune_remote=True,
+            selector=orphan_selector,
+        )
+        execute_transfer(
+            prune,
+            local_root=local_root,
+            local=local,
+            remote=remote,
+            transport=transport,
+            progress=progress.append,
+        )
+        assert not orphan.exists()
+        orphan_directory = remote_root / "orphan-dir"
+        orphan_directory.mkdir()
+        (orphan_directory / "child.txt").write_text("delete me", encoding="utf-8")
+        directory_selector = FileSelectorSet(
+            (FileSelector("orphan-dir"), FileSelector("orphan-dir/**"))
+        )
+        local = snapshot_local(local_root, rules, directory_selector)
+        remote = transport.snapshot(rules, directory_selector)
+        directory_prune = build_comparison(
+            local,
+            remote,
+            prune_remote=True,
+            selector=directory_selector,
+        )
+        execute_transfer(
+            directory_prune,
+            local_root=local_root,
+            local=local,
+            remote=remote,
+            transport=transport,
+            progress=progress.append,
+        )
+        assert not orphan_directory.exists()
+        assert progress == [
+            TransferOperation("create", "nested", "directory"),
+            TransferOperation("add", "nested/selected.txt", "file"),
+            TransferOperation("update", "nested/selected.txt", "file"),
+            TransferOperation("delete", "orphan.txt", "file"),
+            TransferOperation("delete", "orphan-dir/child.txt", "file"),
+            TransferOperation("delete", "orphan-dir", "directory"),
+        ]
+
+
+def test_cli_shallow_scope_and_recursive_defaults_over_ftps(
+    tls_ftp_server, tmp_path, monkeypatch
+):
+    port, certificate, remote_root = tls_ftp_server
+    local_root = tmp_path / "local"
+    (local_root / "nested").mkdir(parents=True)
+    (local_root / "top.txt").write_text("local top")
+    (local_root / "nested/child.txt").write_text("local child")
+    (remote_root / "nested").mkdir()
+    (remote_root / "orphan/deep").mkdir(parents=True)
+    (remote_root / "orphan/direct.txt").write_text("direct")
+    (remote_root / "orphan/deep/keep.txt").write_text("keep")
+    monkeypatch.chdir(local_root)
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    store = ConfigurationStore(tmp_path / "configs.json")
+    store.save(ApplicationConfiguration(profiles={
+        "prod": ProfileConfiguration(
+            host="localhost", port=port, remote_root="/", local_root=str(local_root),
+        ),
+    }))
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    monkeypatch.setattr(
+        "hlsync.cli.ExplicitFTPSTransport",
+        lambda profile: ExplicitFTPSTransport(profile, ssl_context=context),
+    )
+    visited = []
+    original_listing = ExplicitFTPSTransport.list_directory
+
+    def list_directory(transport, directory, rules):
+        visited.append(directory.as_posix())
+        return original_listing(transport, directory, rules)
+
+    monkeypatch.setattr(ExplicitFTPSTransport, "list_directory", list_directory)
+
+    def invoke(arguments):
+        visited.clear()
+        output, errors = io.StringIO(), io.StringIO()
+        status = run(arguments, store=store, stdout=output, stderr=errors)
+        assert status == 0, errors.getvalue()
+        return output.getvalue(), errors.getvalue()
+
+    output, _ = invoke(["diff"])
+    assert "child.txt" in output and "keep.txt" not in output
+    assert "orphan" not in output
+    assert output.endswith("Not shown: 1 remote-only (-a)\n")
+    assert visited == [".", "nested"]
+    output, _ = invoke(["diff", "-p"])
+    assert "child.txt" in output and "keep.txt" in output
+    assert visited == [".", "nested", "orphan", "orphan/deep"]
+    output, _ = invoke(["diff", "-s"])
+    # Unentered local folders may hold changes; remote-only ones cannot.
+    assert "nested/ ▸" in output and "orphan" not in output
+    assert "child.txt" not in output and "keep.txt" not in output
+    assert visited == ["."]
+    _, progress = invoke(["push", "--shallow", "--dry"])
+    assert "  + top.txt" in progress
+    assert "child.txt" not in progress
+    assert visited == ["."]
+    assert not (remote_root / "top.txt").exists()
+    invoke(["push", "-s"])
+    assert visited == ["."]
+    assert (remote_root / "top.txt").read_text() == "local top"
+    assert not (remote_root / "nested/child.txt").exists()
+    assert (remote_root / "orphan/direct.txt").exists()
+    invoke(["push", "orphan", "-s"])
+    assert (remote_root / "orphan/direct.txt").exists()
+    invoke(["push", "orphan", "-s", "-p"])
+    assert visited == [".", "orphan"]
+    assert not (remote_root / "orphan/direct.txt").exists()
+    assert (remote_root / "orphan/deep/keep.txt").read_text() == "keep"
+    invoke(["push", "nested"])
+    assert (remote_root / "nested/child.txt").read_text() == "local child"
+    invoke(["push"])
+    assert (remote_root / "orphan/deep/keep.txt").exists()
+    invoke(["push", "-p"])
+    assert not (remote_root / "orphan").exists()
+
+
+def test_gitignore_pruning_and_override_over_ftps(
+    tls_ftp_server, tmp_path, monkeypatch
+):
+    port, certificate, remote_root = tls_ftp_server
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    (local_root / ".gitignore").write_text("*.txt\n")
+    for name in ("ignored.txt", "deploy.txt"):
+        (local_root / name).write_text("local")
+        (remote_root / name).write_text("old")
+        os.utime(remote_root / name, (1_600_000_000, 1_600_000_000))
+    rules = RuleSet(
+        (SyncRule(1, "exclude", ".gitignore"), SyncRule(2, "include", "deploy.txt")),
+        gitignores=GitIgnores(local_root),
+    )
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    with ExplicitFTPSTransport(
+        ProfileConfiguration(host="localhost", remote_root="/", port=port),
+        ssl_context=ssl.create_default_context(cafile=os.fspath(certificate)),
+    ) as transport:
+        local = snapshot_local(local_root, rules, include_excluded=True)
+        remote = transport.snapshot(rules, include_excluded=True)
+        plan = build_comparison(local, remote, prune_remote=True)
+        for dry in (True, False):
+            execute_transfer(
+                plan, local_root=local_root, local=local, remote=remote,
+                transport=transport, dry_run=dry,
+            )
+            if dry:
+                assert (remote_root / "ignored.txt").read_text() == "old"
+                assert (remote_root / "deploy.txt").read_text() == "old"
+        assert not (remote_root / "ignored.txt").exists()
+        assert (remote_root / "deploy.txt").read_text() == "local"
+        assert not (remote_root / ".gitignore").exists()
+
+
+def test_push_skips_an_unwritable_subtree_and_continues_independent_files(
+    tmp_path,
+) -> None:
+    local_root = tmp_path / "local"
+    blocked = local_root / "blocked"
+    blocked.mkdir(parents=True)
+    (blocked / "child.txt").write_text("blocked", encoding="utf-8")
+    (local_root / "good.txt").write_text("good", encoding="utf-8")
+    local = snapshot_local(local_root, RuleSet())
+    remote = TreeSnapshot(
+        (
+            TreeEntry(
+                "orphan.txt",
+                "file",
+                size=6,
+                modified_ns=1_700_000_000_000_000_000,
+                timestamp_precision_ns=1_000_000_000,
+            ),
+        )
+    )
+    plan = build_comparison(local, remote, prune_remote=True)
+    uploads = []
+    deletions = []
+    events = []
+
+    def report(event):
+        if isinstance(event, TransferOperation):
+            assert (event.path, b"good") in uploads
+        events.append(event)
+
+    class PartiallyWritableTransport:
+        def make_directory(self, path):
+            if path == "blocked":
+                raise PathOperationError("550 Permission denied")
+
+        def upload_file(
+            self,
+            source,
+            path,
+            *,
+            size,
+            modified_ns,
+            replace,
+            byte_progress=None,
+        ):
+            assert [(event.status, event.path) for event in events] == [
+                ("failed", "blocked"), ("skipped", "blocked/child.txt")
+            ]
+            uploads.append((path, source.read()))
+
+        def delete_path(self, path, *, is_directory):
+            deletions.append(path)
+
+    result = execute_transfer(
+        plan,
+        local_root=local_root,
+        local=local,
+        remote=remote,
+        transport=PartiallyWritableTransport(),
+        progress=report,
+    )
+
+    assert uploads == [("good.txt", b"good")]
+    assert deletions == []
+    assert result.changed_count == 1
+    assert isinstance(events[-1], TransferIssue)
+    assert events[-1].path == "orphan.txt"
+    assert [(issue.status, issue.path) for issue in result.issues] == [
+        ("failed", "blocked"),
+        ("skipped", "blocked/child.txt"),
+        ("skipped", "orphan.txt"),
+    ]
+
+
+def test_cli_push_refuses_to_overwrite_a_newer_remote_file_without_force(
+    tls_ftp_server, tmp_path, monkeypatch
+):
+    port, certificate, remote_root = tls_ftp_server
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    for name, local_time, remote_time in (
+        ("page.html", 1_600_000_000, 1_700_000_000),
+        ("app.js", 1_700_000_000, 1_600_000_000),
+    ):
+        (local_root / name).write_text("local")
+        os.utime(local_root / name, (local_time, local_time))
+        (remote_root / name).write_text("remote!")
+        os.utime(remote_root / name, (remote_time, remote_time))
+    monkeypatch.chdir(local_root)
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    store = ConfigurationStore(tmp_path / "configs.json")
+    store.save(ApplicationConfiguration(profiles={
+        "prod": ProfileConfiguration(
+            host="localhost", port=port, remote_root="/", local_root=str(local_root),
+        ),
+    }))
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    monkeypatch.setattr(
+        "hlsync.cli.ExplicitFTPSTransport",
+        lambda profile: ExplicitFTPSTransport(profile, ssl_context=context),
+    )
+
+    errors = io.StringIO()
+    assert run(["push"], store=store, stdout=io.StringIO(), stderr=errors) == 1
+    assert "page.html" in errors.getvalue() and "--force" in errors.getvalue()
+    # The conflict stops the whole push before any file is changed.
+    assert (remote_root / "page.html").read_text() == "remote!"
+    assert (remote_root / "app.js").read_text() == "remote!"
+    assert run(["push", "--force"], store=store, stdout=io.StringIO(),
+               stderr=io.StringIO()) == 0
+    assert (remote_root / "page.html").read_text() == "local"
+    assert (remote_root / "app.js").read_text() == "local"

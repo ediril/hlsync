@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "hlsync_build"
+backend-path = ["build_backend"]
+
+[project]
+name = "hlsync"
+dynamic = ["version"]
+description = "Synchronize local files with remote servers over explicit FTPS"
+readme = "README.md"
+license = "LicenseRef-PolyForm-Strict-1.0.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["pathspec>=0.12.1,<2"]
+authors = [{ name = "HLSync contributors" }]
+keywords = ["deployment", "ftp", "ftps", "synchronization"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: System :: Archiving :: Backup",
+]
+[project.urls]
+Homepage = "https://github.com/ediril/hlsync"
+Changelog = "https://github.com/ediril/hlsync/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ediril/hlsync/issues"
+Repository = "https://github.com/ediril/hlsync.git"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1,<2",
+  "pyftpdlib[ssl]>=2.0,<3",
+  "pytest>=8,<10",
+  "ruff>=0.12,<1",
+  "setuptools>=77",
+  "twine>=6,<7",
+]
+
+[project.scripts]
+hlsync = "hlsync.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "hlsync._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

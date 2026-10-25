@@ -1,0 +1,179 @@
+import pytest
+
+from hlsync.comparison import build_comparison
+from hlsync.selection import FileSelector, SelectionError
+from hlsync.snapshot import TreeEntry, TreeSnapshot
+
+
+def test_comparison_profiles_push_pull_prune_and_timestamp_precision() -> None:
+    second = 1_700_000_000_000_000_000
+    local = TreeSnapshot(
+        (
+            TreeEntry("assets", "directory"),
+            TreeEntry(
+                "assets/same.css",
+                "file",
+                size=10,
+                modified_ns=second + 900_000_000,
+                timestamp_precision_ns=1,
+            ),
+            TreeEntry(
+                "changed.txt",
+                "file",
+                size=12,
+                modified_ns=second + 1_000_000_000,
+                timestamp_precision_ns=1,
+            ),
+            TreeEntry(
+                "same-second.txt",
+                "file",
+                size=3,
+                modified_ns=second + 900_000_000,
+                timestamp_precision_ns=1,
+            ),
+            TreeEntry(
+                "conflict",
+                "file",
+                size=1,
+                modified_ns=second,
+                timestamp_precision_ns=1,
+            ),
+            TreeEntry("linked", "symlink"),
+            TreeEntry(
+                "local.txt",
+                "file",
+                size=5,
+                modified_ns=second,
+                timestamp_precision_ns=1,
+            ),
+            TreeEntry(
+                "excluded.txt",
+                "file",
+                size=5,
+                modified_ns=second,
+                timestamp_precision_ns=1,
+                excluded=True,
+            ),
+            TreeEntry("excluded-dir", "directory", excluded=True),
+        )
+    )
+    remote = TreeSnapshot(
+        (
+            TreeEntry("assets", "directory"),
+            TreeEntry(
+                "assets/same.css",
+                "file",
+                size=10,
+                modified_ns=second,
+                timestamp_precision_ns=1_000_000_000,
+            ),
+            TreeEntry(
+                "changed.txt",
+                "file",
+                size=13,
+                modified_ns=second,
+                timestamp_precision_ns=1_000_000_000,
+            ),
+            TreeEntry(
+                "same-second.txt",
+                "file",
+                size=4,
+                modified_ns=second,
+                timestamp_precision_ns=1_000_000_000,
+            ),
+            TreeEntry("conflict", "directory"),
+            TreeEntry(
+                "remote.txt",
+                "file",
+                size=6,
+                modified_ns=second,
+                timestamp_precision_ns=1_000_000_000,
+            ),
+            TreeEntry(
+                "excluded.txt",
+                "file",
+                size=5,
+                modified_ns=second,
+                timestamp_precision_ns=1_000_000_000,
+                excluded=True,
+            ),
+            TreeEntry("excluded-dir", "directory", excluded=True),
+        )
+    )
+
+    push = {entry.path: entry for entry in build_comparison(local, remote).entries}
+    pruned_push = {
+        entry.path: entry
+        for entry in build_comparison(local, remote, prune_remote=True).entries
+    }
+    pull = {
+        entry.path: entry
+        for entry in build_comparison(
+            local,
+            remote,
+            direction="pull",
+            prune_remote=True,
+        ).entries
+    }
+
+    assert (push["assets/same.css"].state, push["assets/same.css"].action) == (
+        "identical",
+        "unchanged",
+    )
+    assert push["changed.txt"].action == "replace-remote"
+    # Only a strictly newer source replaces; ties at the coarser precision
+    # cannot show which side is newer, so they conflict unless forced.
+    assert (pull["changed.txt"].state, pull["changed.txt"].action) == (
+        "destination-newer",
+        "conflict",
+    )
+    assert push["same-second.txt"].action == "conflict"
+    forced = {
+        entry.path: entry
+        for entry in build_comparison(local, remote, force=True).entries
+    }
+    assert forced["same-second.txt"].action == "replace-remote"
+    assert forced["conflict"].action == "conflict"
+    assert push["local.txt"].action == "upload"
+    assert pull["local.txt"].action == "skip"
+    assert push["remote.txt"].action == "skip"
+    assert push["excluded.txt"].action == "excluded"
+    assert (
+        pruned_push["excluded.txt"].state,
+        pruned_push["excluded.txt"].action,
+    ) == ("excluded", "delete-remote")
+    # Push authority can treat a local exclusion as absent without erasing
+    # its actual presence or exclusion from the comparison used by diff.
+    assert pruned_push["excluded.txt"].local_kind == "file"
+    assert pruned_push["excluded-dir"].action == "excluded"
+    assert pull["remote.txt"].action == "delete-remote"
+    assert push["conflict"].action == "conflict"
+    assert push["linked"].action == "conflict"
+
+    selected = build_comparison(
+        local,
+        remote,
+        selector=FileSelector("*.txt"),
+    )
+    assert [entry.path for entry in selected.entries] == [
+        "changed.txt",
+        "excluded.txt",
+        "local.txt",
+        "remote.txt",
+        "same-second.txt",
+    ]
+    with pytest.raises(SelectionError, match="matched no"):
+        build_comparison(
+            local,
+            remote,
+            selector=FileSelector("missing/**/*.js"),
+        )
+
+    top_level = FileSelector("*")
+    assert top_level.matches("index.html")
+    assert not top_level.matches("src/index.html")
+    assert not top_level.may_match_descendant("src")
+    recursive = FileSelector("src/**/*.js")
+    assert recursive.may_match_descendant("src")
+    assert recursive.may_match_descendant("src/components")
+    assert not recursive.may_match_descendant("assets")

@@ -1,0 +1,576 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+from hlsync.gitignore import GitIgnores
+from hlsync.rules import RuleAction, RuleError, RuleSet, RuleTarget, SyncRule
+from hlsync.storage import write_json_atomic
+
+CONFIG_VERSION = 9
+GLOBAL_RULES_VERSION = 1
+PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+DEFAULT_USERNAME_ENV = "PROD_FTPS_USERNAME"
+DEFAULT_PASSWORD_ENV = "PROD_FTPS_PASSWORD"
+DEFAULT_GLOBAL_RULES = (
+    SyncRule(1, "exclude", "**/.git/**"),
+    SyncRule(2, "exclude", "**/.svn/**"),
+    SyncRule(3, "exclude", "**/.hg/**"),
+    SyncRule(4, "exclude", "**/.DS_Store"),
+    SyncRule(5, "exclude", "**/Thumbs.db"),
+    SyncRule(6, "exclude", "**/desktop.ini"),
+    SyncRule(7, "exclude", "**/.gitignore"),
+    SyncRule(8, "exclude", "**/.gitmodules"),
+    SyncRule(9, "exclude", "**/error_log"),
+)
+
+
+class ConfigurationError(ValueError):
+    """Raised when configuration is invalid or cannot be decoded."""
+
+
+@dataclass(frozen=True)
+class RuleUpdate:
+    added: tuple[SyncRule, ...] = ()
+    removed: tuple[SyncRule, ...] = ()
+
+
+def validate_profile_name(name: str) -> str:
+    if not PROFILE_NAME_PATTERN.fullmatch(name):
+        raise ConfigurationError(
+            "profile name must start with a letter or digit and contain "
+            "only letters, digits, '.', '_', or '-'"
+        )
+    return name
+
+
+def _required_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigurationError(f"{field_name} must be a non-empty string")
+    return value.strip()
+
+
+def _environment_name(value: Any, field_name: str) -> str:
+    name = _required_string(value, field_name)
+    if not ENVIRONMENT_NAME_PATTERN.fullmatch(name):
+        raise ConfigurationError(
+            f"{field_name} is not a valid environment-variable name"
+        )
+    return name
+
+
+def _normalize_remote_root(value: Any) -> str:
+    remote_value = _required_string(value, "profile remote root")
+    remote_path = PurePosixPath(remote_value)
+    if not remote_path.is_absolute():
+        raise ConfigurationError("profile remote root must be absolute")
+    if ".." in remote_path.parts:
+        raise ConfigurationError("profile remote root cannot contain '..'")
+    components = [part for part in remote_path.parts if part not in {"/", "//"}]
+    return "/" + "/".join(components)
+
+
+def canonical_local_root(directory: str | Path) -> str:
+    candidate = Path(directory).expanduser()
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise ConfigurationError(f"local root does not exist: {candidate}") from error
+    if not resolved.is_dir():
+        raise ConfigurationError(f"local root is not a directory: {candidate}")
+    if resolved.parent == resolved:
+        raise ConfigurationError("local root cannot be the filesystem root")
+    return os.fspath(resolved)
+
+
+def _validate_stored_local_root(value: Any) -> str | None:
+    if value is None:
+        return None
+    local = _required_string(value, "profile local root")
+    path = Path(local)
+    if not path.is_absolute():
+        raise ConfigurationError("profile local root must be absolute")
+    if path.parent == path:
+        raise ConfigurationError("profile local root cannot be the filesystem root")
+    if os.path.normpath(local) != local:
+        raise ConfigurationError("profile local root must be normalized")
+    return local
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return first == second or first in second.parents or second in first.parents
+
+
+def _rule_action_already_applies(
+    rules: tuple[SyncRule, ...],
+    action: RuleAction,
+    pattern: str,
+    target: RuleTarget,
+    gitignores: GitIgnores | None = None,
+) -> bool:
+    if "*" in pattern:
+        return False
+    winner = next(
+        (
+            rule
+            for rule in reversed(rules)
+            if rule.target == target and rule.matches(pattern)
+        ),
+        None,
+    )
+    excluded = (
+        winner.action == "exclude"
+        if winner is not None
+        else bool(target == "local" and gitignores and gitignores.excludes(pattern))
+    )
+    return excluded if action == "exclude" else not excluded
+
+
+def _append_rules(
+    rules: tuple[SyncRule, ...],
+    action: RuleAction,
+    patterns: tuple[str, ...],
+    *,
+    target: RuleTarget = "local",
+    base_rules: tuple[SyncRule, ...] = (),
+    gitignores: GitIgnores | None = None,
+) -> tuple[tuple[SyncRule, ...], RuleUpdate]:
+    ordered = list(rules)
+    added: list[SyncRule] = []
+    removed: list[SyncRule] = []
+    unique_patterns: list[str] = []
+    for pattern in patterns:
+        unique_patterns = [item for item in unique_patterns if item != pattern]
+        unique_patterns.append(pattern)
+    for pattern in unique_patterns:
+        replaced = tuple(
+            rule
+            for rule in ordered
+            if rule.pattern == pattern and rule.target == target
+        )
+        ordered = [
+            rule for rule in ordered if rule.pattern != pattern or rule.target != target
+        ]
+        if replaced and _rule_action_already_applies(
+            (*base_rules, *ordered), action, pattern, target, gitignores
+        ):
+            removed.extend(replaced)
+            continue
+        next_id = max((rule.id for rule in ordered), default=0) + 1
+        rule = SyncRule(next_id, action, pattern, target)
+        ordered.append(rule)
+        added.append(rule)
+    return (
+        tuple(ordered),
+        RuleUpdate(tuple(added), tuple(removed)),
+    )
+
+
+def _remove_rule(
+    rules: tuple[SyncRule, ...],
+    rule_id: int,
+    *,
+    scope: str,
+) -> tuple[tuple[SyncRule, ...], SyncRule]:
+    removed = next((rule for rule in rules if rule.id == rule_id), None)
+    if removed is None:
+        raise ConfigurationError(f"{scope} has no rule with id {rule_id}")
+    return tuple(rule for rule in rules if rule.id != rule_id), removed
+
+
+def _validate_rule_sequence(rules: tuple[SyncRule, ...]) -> tuple[SyncRule, ...]:
+    try:
+        rule_set = RuleSet(rules)
+    except RuleError as error:
+        raise ConfigurationError(str(error)) from error
+    return rule_set.rules
+
+
+@dataclass(frozen=True)
+class ProfileConfiguration:
+    host: str
+    remote_root: str
+    port: int = 21
+    username_env: str = DEFAULT_USERNAME_ENV
+    password_env: str = DEFAULT_PASSWORD_ENV
+    type: str = "ftps"
+    local_root: str | None = None
+    rules: tuple[SyncRule, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "host", _required_string(self.host, "host"))
+        object.__setattr__(
+            self,
+            "remote_root",
+            _normalize_remote_root(self.remote_root),
+        )
+        if self.type != "ftps":
+            raise ConfigurationError("profile protocol must be 'ftps'")
+        if isinstance(self.port, bool) or not isinstance(self.port, int):
+            raise ConfigurationError("port must be an integer")
+        if not 1 <= self.port <= 65535:
+            raise ConfigurationError("port must be between 1 and 65535")
+        object.__setattr__(
+            self,
+            "username_env",
+            _environment_name(self.username_env, "username_env"),
+        )
+        object.__setattr__(
+            self,
+            "password_env",
+            _environment_name(self.password_env, "password_env"),
+        )
+        object.__setattr__(
+            self,
+            "local_root",
+            _validate_stored_local_root(self.local_root),
+        )
+        object.__setattr__(
+            self,
+            "rules",
+            _validate_rule_sequence(self.rules),
+        )
+        if self.local_root is None and self.rules:
+            raise ConfigurationError("an unmapped profile cannot have rules")
+
+    def with_roots(
+        self,
+        *,
+        local_root: str,
+        remote_root: str,
+    ) -> ProfileConfiguration:
+        return ProfileConfiguration(
+            host=self.host,
+            remote_root=remote_root,
+            port=self.port,
+            username_env=self.username_env,
+            password_env=self.password_env,
+            type=self.type,
+            local_root=local_root,
+            rules=self.rules,
+        )
+
+    def with_rules(
+        self,
+        rules: tuple[SyncRule, ...],
+    ) -> ProfileConfiguration:
+        if self.local_root is None:
+            raise ConfigurationError("cannot change rules for an unmapped profile")
+        return ProfileConfiguration(
+            host=self.host,
+            remote_root=self.remote_root,
+            port=self.port,
+            username_env=self.username_env,
+            password_env=self.password_env,
+            type=self.type,
+            local_root=self.local_root,
+            rules=rules,
+        )
+
+    def remote_path_for(self, local_path: Path) -> str:
+        if self.local_root is None:
+            raise ConfigurationError("profile has no local root mapping")
+        try:
+            relative = local_path.relative_to(Path(self.local_root))
+        except ValueError as error:
+            raise ConfigurationError(
+                f"local path '{local_path}' is outside profile root '{self.local_root}'"
+            ) from error
+        if not relative.parts:
+            return self.remote_root
+        return str(PurePosixPath(self.remote_root) / PurePosixPath(*relative.parts))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "host": self.host,
+            "remote_root": self.remote_root,
+            "port": self.port,
+            "username_env": self.username_env,
+            "password_env": self.password_env,
+            "local_root": self.local_root,
+            "rules": [rule.to_dict() for rule in self.rules],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> ProfileConfiguration:
+        if not isinstance(value, dict):
+            raise ConfigurationError("profile configuration must be an object")
+        expected = {
+            "type",
+            "host",
+            "remote_root",
+            "port",
+            "username_env",
+            "password_env",
+            "local_root",
+            "rules",
+        }
+        unknown = set(value) - expected
+        if unknown:
+            raise ConfigurationError(
+                f"unknown profile configuration fields: {', '.join(sorted(unknown))}"
+            )
+        try:
+            rules = value["rules"]
+            if not isinstance(rules, list):
+                raise ConfigurationError("profile rules must be an array")
+            try:
+                decoded_rules = tuple(SyncRule.from_dict(rule) for rule in rules)
+            except RuleError as error:
+                raise ConfigurationError(str(error)) from error
+            return cls(
+                type=value["type"],
+                host=value["host"],
+                remote_root=value["remote_root"],
+                port=value["port"],
+                username_env=value["username_env"],
+                password_env=value["password_env"],
+                local_root=value["local_root"],
+                rules=decoded_rules,
+            )
+        except KeyError as error:
+            raise ConfigurationError(
+                f"profile configuration is missing field: {error.args[0]}"
+            ) from error
+
+
+@dataclass
+class ApplicationConfiguration:
+    profiles: dict[str, ProfileConfiguration] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in self.profiles:
+            validate_profile_name(name)
+        mapped = [
+            (name, Path(profile.local_root))
+            for name, profile in self.profiles.items()
+            if profile.local_root is not None
+        ]
+        for index, (name, root) in enumerate(mapped):
+            for other_name, other_root in mapped[:index]:
+                if _paths_overlap(root, other_root):
+                    raise ConfigurationError(
+                        f"profile '{name}' local root '{root}' overlaps profile "
+                        f"'{other_name}' root '{other_root}'"
+                    )
+
+    def set_profile_roots(
+        self,
+        profile_name: str,
+        *,
+        local_root: str,
+        remote_root: str,
+    ) -> None:
+        profile = self.profiles[profile_name]
+        root = Path(local_root)
+        for other_name, other in self.profiles.items():
+            if other_name == profile_name or other.local_root is None:
+                continue
+            other_root = Path(other.local_root)
+            if _paths_overlap(root, other_root):
+                raise ConfigurationError(
+                    f"local root '{root}' for profile '{profile_name}' overlaps "
+                    f"profile '{other_name}' root '{other_root}'"
+                )
+        self.profiles[profile_name] = profile.with_roots(
+            local_root=local_root,
+            remote_root=remote_root,
+        )
+
+    def append_rules(
+        self,
+        profile_name: str,
+        action: RuleAction,
+        patterns: tuple[str, ...],
+        *,
+        target: RuleTarget = "local",
+        base_rules: tuple[SyncRule, ...] = (),
+    ) -> RuleUpdate:
+        profile = self.profiles[profile_name]
+        rules, update = _append_rules(
+            profile.rules,
+            action,
+            patterns,
+            target=target,
+            base_rules=base_rules,
+            gitignores=GitIgnores(Path(profile.local_root))
+            if profile.local_root
+            else None,
+        )
+        self.profiles[profile_name] = profile.with_rules(rules)
+        return update
+
+    def remove_rule(self, profile_name: str, rule_id: int) -> SyncRule:
+        profile = self.profiles[profile_name]
+        remaining, removed = _remove_rule(
+            profile.rules,
+            rule_id,
+            scope=f"profile '{profile_name}'",
+        )
+        self.profiles[profile_name] = profile.with_rules(remaining)
+        return removed
+
+    def profile_for_path(
+        self, local_path: Path
+    ) -> tuple[str, ProfileConfiguration] | None:
+        for name, profile in sorted(self.profiles.items()):
+            if profile.local_root is None:
+                continue
+            root = Path(profile.local_root)
+            if local_path == root or root in local_path.parents:
+                return name, profile
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": CONFIG_VERSION,
+            "profiles": {
+                name: profile.to_dict()
+                for name, profile in sorted(self.profiles.items())
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> ApplicationConfiguration:
+        if not isinstance(value, dict):
+            raise ConfigurationError("configuration document must be an object")
+        if value.get("version") != CONFIG_VERSION:
+            raise ConfigurationError(
+                f"config version mismatch (found {value.get('version')!r}, "
+                f"expected {CONFIG_VERSION}); configuration schema changed—"
+                "recreate config"
+            )
+        if set(value) != {"version", "profiles"}:
+            raise ConfigurationError("configuration has unknown or missing fields")
+        profiles_value = value["profiles"]
+        if not isinstance(profiles_value, dict):
+            raise ConfigurationError("profiles must be an object")
+        profiles = {
+            validate_profile_name(name): ProfileConfiguration.from_dict(profile)
+            for name, profile in profiles_value.items()
+        }
+        return cls(profiles=profiles)
+
+
+@dataclass(frozen=True)
+class GlobalRuleConfiguration:
+    rules: tuple[SyncRule, ...] = DEFAULT_GLOBAL_RULES
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "rules",
+            _validate_rule_sequence(self.rules),
+        )
+
+    def with_appended_rules(
+        self,
+        action: RuleAction,
+        patterns: tuple[str, ...],
+        *,
+        target: RuleTarget = "local",
+    ) -> tuple[GlobalRuleConfiguration, RuleUpdate]:
+        rules, update = _append_rules(
+            self.rules,
+            action,
+            patterns,
+            target=target,
+        )
+        return GlobalRuleConfiguration(rules), update
+
+    def without_rule(
+        self,
+        rule_id: int,
+    ) -> tuple[GlobalRuleConfiguration, SyncRule]:
+        rules, removed = _remove_rule(
+            self.rules,
+            rule_id,
+            scope="global synchronization policy",
+        )
+        return GlobalRuleConfiguration(rules), removed
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": GLOBAL_RULES_VERSION,
+            "rules": [rule.to_dict() for rule in self.rules],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> GlobalRuleConfiguration:
+        if not isinstance(value, dict):
+            raise ConfigurationError("global rules document must be an object")
+        if value.get("version") != GLOBAL_RULES_VERSION:
+            raise ConfigurationError(
+                "global rules version mismatch "
+                f"(found {value.get('version')!r}, expected {GLOBAL_RULES_VERSION})"
+            )
+        if set(value) != {"version", "rules"}:
+            raise ConfigurationError(
+                "global rules document has unknown or missing fields"
+            )
+        rules = value["rules"]
+        if not isinstance(rules, list):
+            raise ConfigurationError("global rules must be an array")
+        try:
+            decoded = tuple(SyncRule.from_dict(rule) for rule in rules)
+        except RuleError as error:
+            raise ConfigurationError(str(error)) from error
+        return cls(decoded)
+
+
+class ConfigurationStore:
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or Path.home() / ".hlsync" / "configs.json"
+
+    def load(self) -> ApplicationConfiguration:
+        if not self.path.exists():
+            return ApplicationConfiguration()
+        try:
+            with self.path.open(encoding="utf-8") as handle:
+                document = json.load(handle)
+        except (OSError, json.JSONDecodeError) as error:
+            raise ConfigurationError(
+                f"could not read configuration file {self.path}: {error}"
+            ) from error
+        return ApplicationConfiguration.from_dict(document)
+
+    def save(self, configuration: ApplicationConfiguration) -> None:
+        try:
+            write_json_atomic(self.path, configuration.to_dict())
+        except OSError as error:
+            raise ConfigurationError(
+                f"could not write configuration file {self.path}: {error}"
+            ) from error
+
+
+class GlobalRuleStore:
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or Path.home() / ".hlsync" / "rules.json"
+
+    def load(self) -> GlobalRuleConfiguration:
+        if not self.path.exists():
+            configuration = GlobalRuleConfiguration()
+            self.save(configuration)
+            return configuration
+        try:
+            with self.path.open(encoding="utf-8") as handle:
+                document = json.load(handle)
+        except (OSError, json.JSONDecodeError) as error:
+            raise ConfigurationError(
+                f"could not read global rules file {self.path}: {error}"
+            ) from error
+        return GlobalRuleConfiguration.from_dict(document)
+
+    def save(self, configuration: GlobalRuleConfiguration) -> None:
+        try:
+            write_json_atomic(self.path, configuration.to_dict())
+        except OSError as error:
+            raise ConfigurationError(
+                f"could not write global rules file {self.path}: {error}"
+            ) from error
