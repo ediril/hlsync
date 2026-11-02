@@ -7,7 +7,7 @@ import shutil
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TextIO, TypeVar
 
@@ -191,6 +191,8 @@ def _active_options(arguments: argparse.Namespace) -> str | None:
         options.append("included paths only (-i)")
     if getattr(arguments, "show_excluded", False):
         options.append("excluded paths (-x)")
+    if getattr(arguments, "include_excluded", False):
+        options.append("include excluded paths (-I)")
     if getattr(arguments, "prune", False):
         options.append("prune remote-only paths (-p)")
     if getattr(arguments, "force", False):
@@ -215,6 +217,13 @@ def _add_recursive_depth_arguments(parser: argparse.ArgumentParser) -> None:
     depth.add_argument(
         "-s", "--shallow", action="store_true",
         help="process immediate contents without entering child directories",
+    )
+
+
+def _add_include_excluded_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-I", "--include-excluded", action="store_true",
+        help="treat locally excluded paths as included for this command",
     )
 
 
@@ -587,14 +596,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="preview file changes without modifying anything",
         usage=(
             "hlsync [PROFILE] diff [PATH ...]\n"
-            "       [--pull | --prune] [-r | -s] [-a] [-i] [--paged]\n"
+            "       [--pull | --prune] [-r | -s] [-a] [-x] [-I] [--paged]\n"
             "       [--resume DIRECTORY]"
         ),
         description=(
             "With no PATH, preview the current subtree recursively. Directory "
             "PATHs are also recursive; use -s for immediate contents only. "
             "Use --pull to reverse direction, "
-            "-i to hide exclusions, and -a to show everything."
+            "-x to show exclusions, -I to treat them as included, and -a to "
+            "show everything."
         ),
     )
     add_pattern_operands(
@@ -612,6 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="show changes from the remote perspective without remote deletion",
     )
     _add_recursive_depth_arguments(diff_parser)
+    _add_include_excluded_argument(diff_parser)
     diff_parser.add_argument(
         "-x",
         "--excluded",
@@ -668,13 +679,14 @@ def build_parser() -> argparse.ArgumentParser:
             description=transfer_description[command],
             usage=(
                 (
-                    "hlsync [PROFILE] pull PATH [PATH ...] [-r] [--force]"
+                    "hlsync [PROFILE] pull PATH [PATH ...] [-r] [-I] [--force]"
                     if command == "pull"
-                    else "hlsync [PROFILE] push [PATH ...] [-r | -s]"
+                    else "hlsync [PROFILE] push [PATH ...] [-r | -s] [-I]"
                 )
                 + (" [-p] [--force] [--dry]" if command == "push" else "")
             ),
         )
+        _add_include_excluded_argument(transfer_parser)
         add_pattern_operands(
             transfer_parser,
             required=command == "pull",
@@ -813,6 +825,21 @@ def _effective_rules(
         global_rules,
         profile.rules,
         gitignores=GitIgnores(Path(profile.local_root)) if profile.local_root else None,
+    )
+
+
+def _command_rules(
+    arguments: argparse.Namespace,
+    store: ConfigurationStore,
+    profile: ProfileConfiguration,
+) -> RuleSet:
+    rules = _effective_rules(store, profile)
+    if not arguments.include_excluded:
+        return rules
+    return replace(
+        rules,
+        rules=tuple(rule for rule in rules.rules if rule.target == "remote"),
+        gitignores=None,
     )
 
 
@@ -2105,6 +2132,8 @@ def _resume_command(arguments: argparse.Namespace, directory: PurePosixPath) -> 
         command.append("--shallow")
     if arguments.show_excluded:
         command.append("--excluded")
+    if arguments.include_excluded:
+        command.append("--include-excluded")
     if arguments.show_all:
         command.append("--all")
     command.extend(("--paged", "--resume", directory.as_posix()))
@@ -2191,7 +2220,7 @@ def _diff(
         raise ConfigurationError("--resume requires --paged")
     resume = _resume_directory(arguments.resume)
     selector = _file_selection(arguments, root)
-    rules = _effective_rules(store, profile)
+    rules = _command_rules(arguments, store, profile)
     direction = "pull" if arguments.pull else "push"
     prune_remote = direction == "push" and arguments.prune
     color = _use_color(output)
@@ -2499,7 +2528,8 @@ def _diff(
 
 
 _HIDDEN_DIFF_HINTS = {
-    "excluded": "-x",
+    "excluded": "-x or -I",
+    "remote-excluded": "-x",
     "remote-only": "-a",
     "local-only": "-a",
 }
@@ -2525,7 +2555,7 @@ def _diff_entry_visible(
 
 def _hidden_diff_category(entry: ComparisonEntry) -> str | None:
     if entry.action == "excluded":
-        return "excluded"
+        return entry.state
     if entry.action in {"skip", "untraversed"}:
         if entry.local_kind is None:
             return "remote-only"
@@ -2538,7 +2568,7 @@ def _print_hidden_summary(hidden: dict[str, int], output: TextIO) -> None:
     if not hidden:
         return
     parts = ", ".join(
-        f"{hidden[category]} {category} ({_HIDDEN_DIFF_HINTS[category]})"
+        f"{hidden[category]} {category} (try using {_HIDDEN_DIFF_HINTS[category]})"
         for category in _HIDDEN_DIFF_HINTS
         if category in hidden
     )
@@ -2710,7 +2740,7 @@ def _transfer(
             arguments,
             root,
             transport,
-            _effective_rules(store, profile),
+            _command_rules(arguments, store, profile),
             direction=arguments.command,
             progress=progress,
             include_excluded=arguments.command == "push",

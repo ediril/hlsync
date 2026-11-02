@@ -21,6 +21,12 @@ delete a nonempty directory without traversing it. A later local inclusion that
 may match a descendant permits the local walk needed to honor that inclusion;
 remote boundaries cannot be pierced.
 
+`-I` / `--include-excluded` removes the local boundary for one `diff`, `push`,
+or `pull` by dropping local rules and Git ignores from that command's RuleSet.
+Excluded paths then follow the same comparison and transfer path as included
+ones, and pruning treats them as present, not absent. Remote rules stay in that
+RuleSet. Naming a path does not lift an exclusion by itself.
+
 Locally excluded files remain file-level absences and may be deleted remotely
 by an explicitly pruning push (`-p`). Without pruning, remote-only directories
 are retained and not entered. With it, included remote-only directories may be
@@ -48,11 +54,16 @@ locally excluded directory avoids pretending HLSync can prune it without doing
 the very traversal the exclusion forbids. File-level pruning remains useful for
 ordinary generated or unwanted files.
 
+An explicit option keeps one rule for every path: exclusions apply unless the
+command says otherwise. Lifting them implicitly for a named path made the same
+file behave differently depending on whether its parent folder was excluded, and
+a shell-expanded `push *` would have uploaded excluded folders without asking.
+
 Stateless paging avoids retaining stale remote state between invocations.
 
 ## Intentionally excluded
 
-- Entering an excluded directory merely to inspect or prune it.
+- Entering an excluded directory merely to inspect or prune it, without `-I`.
 - Piercing a remote exclusion with a narrower child inclusion.
 - Implicit recursion for `list`, `diff`, or an explicit directory operand.
 - A bare pull operation.

@@ -637,7 +637,7 @@ def test_cli_shallow_scope_and_recursive_defaults_over_ftps(
     output, _ = invoke(["diff"])
     assert "child.txt" in output and "keep.txt" not in output
     assert "orphan" not in output
-    assert output.endswith("Not shown: 1 remote-only (-a)\n")
+    assert output.endswith("Not shown: 1 remote-only (try using -a)\n")
     assert visited == [".", "nested"]
     output, _ = invoke(["diff", "-p"])
     assert "child.txt" in output and "keep.txt" in output
@@ -821,3 +821,51 @@ def test_cli_push_refuses_to_overwrite_a_newer_remote_file_without_force(
                stderr=io.StringIO()) == 0
     assert (remote_root / "page.html").read_text() == "local"
     assert (remote_root / "app.js").read_text() == "local"
+
+
+def test_cli_include_excluded_transfers_excluded_paths_over_ftps(
+    tls_ftp_server, tmp_path, monkeypatch
+):
+    port, certificate, remote_root = tls_ftp_server
+    local_root = tmp_path / "local"
+    (local_root / "cache/sub").mkdir(parents=True)
+    (local_root / ".gitignore").write_text("cache/\n")
+    (remote_root / "cache/sub").mkdir(parents=True)
+    for name in ("cache/sub/page.txt", "cache/protected.txt"):
+        (local_root / name).write_text("local")
+        os.utime(local_root / name, (1_700_000_000, 1_700_000_000))
+        (remote_root / name).write_text("remote!")
+        os.utime(remote_root / name, (1_600_000_000, 1_600_000_000))
+    monkeypatch.chdir(local_root)
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    store = ConfigurationStore(tmp_path / "configs.json")
+    store.save(ApplicationConfiguration(profiles={
+        "prod": ProfileConfiguration(
+            host="localhost", port=port, remote_root="/", local_root=str(local_root),
+            rules=(SyncRule(1, "exclude", "cache/protected.txt", "remote"),),
+        ),
+    }))
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    monkeypatch.setattr(
+        "hlsync.cli.ExplicitFTPSTransport",
+        lambda profile: ExplicitFTPSTransport(profile, ssl_context=context),
+    )
+
+    def invoke(*arguments):
+        return run(arguments, store=store, stdout=io.StringIO(), stderr=io.StringIO())
+
+    assert invoke("push", "cache") == 0
+    assert (remote_root / "cache/sub/page.txt").read_text() == "remote!"
+
+    assert invoke("push", "-I", "cache") == 0
+    assert (remote_root / "cache/sub/page.txt").read_text() == "local"
+    assert (remote_root / "cache/protected.txt").read_text() == "remote!"
+
+    (remote_root / "cache/sub/page.txt").write_text("server")
+    os.utime(remote_root / "cache/sub/page.txt", (1_800_000_000, 1_800_000_000))
+    assert invoke("pull", "cache/sub/page.txt") != 0
+    assert (local_root / "cache/sub/page.txt").read_text() == "local"
+
+    assert invoke("pull", "-I", "cache/sub/page.txt") == 0
+    assert (local_root / "cache/sub/page.txt").read_text() == "server"

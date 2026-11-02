@@ -4,6 +4,7 @@
   them to a subagent in an isolated worktree, even when a skill or playbook says
   delegation is mandatory. Reserve worktrees for work that needs real isolation,
   such as parallel writers.
+- Do not add a `Co-Authored-By` line to commit messages.
 - Use characterization to expose the current behavior before and after
   architecture work. Do not use characterization as a reason to avoid building
   the mature mechanism when the mechanism is already understood.

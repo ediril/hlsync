@@ -1050,7 +1050,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
     assert "node_modules" not in push_comparison[1]
     assert "same.txt" not in push_comparison[1]
     assert "debug.log" not in push_comparison[1]
-    assert push_comparison[1].endswith("Not shown: 1 excluded (-x)\n")
+    assert push_comparison[1].endswith("Not shown: 1 excluded (try using -x or -I)\n")
     shown_exclusions = invoke(["diff", "-x"], store)
     assert " x     debug.log\n" in shown_exclusions[1]
     assert "Not shown" not in shown_exclusions[1]
@@ -1086,7 +1086,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
     kept_comparison = invoke(["diff"], store, terminal_output=True)
     assert "Options:" not in kept_comparison[2]
     assert "deployed.html" not in kept_comparison[1]
-    assert "remote-only (-a)\n" in kept_comparison[1]
+    assert "remote-only (try using -a)\n" in kept_comparison[1]
     retained_line = (
         "   \033[38;5;30mr\033[0m "
         "\033[38;5;30mdeployed.html\033[0m\n"
@@ -1415,6 +1415,114 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
     assert "-  r   keep.txt\n" in output
 
 
+class _ListingTransport:
+    remote: dict = {}
+    listed: list = []
+
+    def __init__(self, profile):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def list_directory(self, relative_directory, rules):
+        directory = relative_directory.as_posix()
+        self.listed.append(directory)
+        return TreeSnapshot(tuple(
+            TreeEntry(
+                path, "directory", excluded=rules.excludes(path, is_directory=True),
+            ) if kind == "directory" else TreeEntry(
+                path, "file", size=1, modified_ns=0, timestamp_precision_ns=1,
+                excluded=rules.excludes(path),
+            )
+            for path, kind in self.remote[directory].items()
+        ))
+
+
+@pytest.mark.parametrize("exclusion_source", ["rule", "gitignore", "parent-gitignore"])
+def test_include_excluded_diffs_excluded_paths_as_included(
+    tmp_path, monkeypatch, exclusion_source
+) -> None:
+    store = ConfigurationStore(tmp_path / "configs.json")
+    workspace = tmp_path / "workspace"
+    (workspace / "cache/sub").mkdir(parents=True)
+    for name in ("cache/a.txt", "cache/sub/b.txt", "cache/sub/.DS_Store"):
+        (workspace / name).write_text("local")
+    assert invoke(
+        [
+            "create", "prod", "--host", "unreachable.example",
+            "--remote-root", "/public_html", "--local-root", str(workspace),
+        ],
+        store,
+    )[0] == 0
+    monkeypatch.chdir(workspace)
+    if exclusion_source == "rule":
+        assert invoke(["exclude", "--pattern", "cache/**"], store)[0] == 0
+    elif exclusion_source == "gitignore":
+        (workspace / ".gitignore").write_text("cache/\n")
+    else:
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitignore").write_text("/workspace/cache/\n")
+    monkeypatch.setattr(_ListingTransport, "listed", [])
+    monkeypatch.setattr(_ListingTransport, "remote", {
+        "cache": {"cache/a.txt": "file", "cache/sub": "directory"},
+        "cache/sub": {"cache/sub/b.txt": "file"},
+    })
+    monkeypatch.setattr("hlsync.cli.ExplicitFTPSTransport", _ListingTransport)
+
+    status, output, error = invoke(["diff", "cache"], store)
+    assert status == 0, error
+    assert _ListingTransport.listed == ["cache"]
+    assert output.startswith("  nothing to push\nNot shown: ")
+
+    _ListingTransport.listed.clear()
+    status, output, error = invoke(["diff", "-I", "cache"], store)
+    assert status == 0, error
+    assert _ListingTransport.listed == ["cache", "cache/sub"]
+    assert output == (
+        "     cache/\n"
+        "       sub/\n"
+        "+  l     .DS_Store\n"
+        "~        b.txt\n"
+        "~      a.txt\n"
+    )
+    assert error.startswith(
+        "Checking differences for profile 'prod'...\n"
+        "Options: include excluded paths (-I).\n"
+    )
+
+    assert invoke(["diff", "-I", "cache", "--paged"], store)[1].endswith(
+        "Resume: hlsync diff cache --include-excluded --paged --resume cache/sub\n"
+    )
+
+
+def test_prune_deletes_excluded_file_only_without_include_excluded(
+    tmp_path, monkeypatch
+) -> None:
+    store = ConfigurationStore(tmp_path / "configs.json")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".env").write_text("secret")
+    assert invoke(
+        [
+            "create", "prod", "--host", "unreachable.example",
+            "--remote-root", "/public_html", "--local-root", str(workspace),
+        ],
+        store,
+    )[0] == 0
+    monkeypatch.chdir(workspace)
+    assert invoke(["exclude", "--pattern", ".env"], store)[0] == 0
+    monkeypatch.setattr(_ListingTransport, "listed", [])
+    monkeypatch.setattr(_ListingTransport, "remote", {".": {".env": "file"}})
+    monkeypatch.setattr("hlsync.cli.ExplicitFTPSTransport", _ListingTransport)
+
+    assert invoke(["diff", "-p", ".env"], store)[1] == "-x   .env\n"
+    assert invoke(["diff", "-p", "-I", ".env"], store)[1] == "~    .env\n"
+
+
 def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("NO_COLOR", raising=False)
     store = ConfigurationStore(tmp_path / "configs.json")
@@ -1505,6 +1613,10 @@ def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> 
     assert comparison[0] == 0
     assert comparison[1] == " #   future-dir/ ▸\n"
     assert listed == ["."]
+    assert invoke(["diff"], store)[1] == (
+        "  nothing to push\nNot shown: 1 remote-excluded (try using -x)\n"
+    )
+    listed.clear()
 
     remote_listing = invoke(["lsr"], store)
     assert remote_listing[0] == 0

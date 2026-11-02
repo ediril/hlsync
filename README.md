@@ -340,6 +340,7 @@ updates, deletions, and conflicts, under their folder headings. A final
 
 ```console
 hlsync diff -x      # also show excluded paths (--excluded)
+hlsync diff -I      # compare locally excluded paths as included (--include-excluded)
 hlsync diff -a      # show everything, including unchanged and kept paths (--all)
 ```
 Recursive diff keeps file-browser order in both views: directories and their
@@ -361,6 +362,17 @@ directory is a traversal boundary and is retained with `x`. An explicit local
 inclusion for a descendant permits traversal;
 remote exclusions remain hard boundaries. Hiding exclusions never hides a
 deletion: with `-p`, an excluded path that would be deleted always shows as `-x`.
+
+`-I` / `--include-excluded` treats locally excluded paths as included for one
+`diff`, `push`, or `pull`. Exclusion rules and `.gitignore` files are not
+consulted, so nested paths such as `.git/` and `.DS_Store` count too. Remote
+exclusions still apply.
+
+```console
+hlsync diff -I collectiq/data
+hlsync pull -I collectiq/data/.waitlist.sqlite
+hlsync push -I collectiq/data --dry
+```
 
 Diff enters eligible child folders by default. `diff -s` or
 `diff templates --shallow` reads only immediate contents. Unentered child
@@ -411,7 +423,10 @@ stops before changing anything, listing the conflicting paths. Use `--force` to
 overwrite them, or select other paths. Because HLSync copies timestamps on every
 transfer, a later edit on either side makes that side newer; the check assumes
 the local and server clocks roughly agree. Locally
-excluded paths are never uploaded or pulled; remote-excluded paths are not
+excluded paths are not uploaded or pulled unless `-I` / `--include-excluded` is
+given, which applies to everything in scope, so review `push -I --dry` first:
+a bare `push -I` would upload `.git/`, `.env`, and anything else your rules keep
+out. Remote-excluded paths are never
 traversed or changed. Push never deletes unless `-p` / `--prune` is given;
 then it deletes selected remote-only paths, including remote copies of locally
 excluded files. Excluded directories on

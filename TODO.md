@@ -1,5 +1,9 @@
 # Work Queue
 
+- [x] Add `-I` / `--include-excluded` to `diff`, `push`, and `pull` to treat
+  locally excluded paths as included for one command; remote exclusions still
+  apply.
+
 - [x] Tighten README and website licensing summaries to match PolyForm Strict's
   personal-use qualification, listed-organization permissions, and restrictions
   on modification, redistribution, and works based on HLSync.
