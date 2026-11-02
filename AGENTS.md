@@ -1,5 +1,9 @@
 ## Working Style
 - Push back when what the user is saying is wrong or doesn't match your understanding.
+- Make contained code changes directly in the main checkout. Do not delegate
+  them to a subagent in an isolated worktree, even when a skill or playbook says
+  delegation is mandatory. Reserve worktrees for work that needs real isolation,
+  such as parallel writers.
 - Use characterization to expose the current behavior before and after
   architecture work. Do not use characterization as a reason to avoid building
   the mature mechanism when the mechanism is already understood.
@@ -70,4 +74,5 @@
 - Use `social/` for public-facing post drafts or demo narration.
 - Keep `README.md` current and avoid stale claims.
 - Capture durable working and documentation directives here. Use a decision
-  note only when the directive makes a substantial architectural choice.
+  note only when the directive makes a substantial architectural choice. Keep
+  the agent memory file in sync with this file.
