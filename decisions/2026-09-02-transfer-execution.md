@@ -43,7 +43,7 @@ events and never decides transfer completion or pruning eligibility.
 Traversal reports discovered and completed directories from the same selected
 walk, after exclusion filtering and artifact handling. Progress must not trigger
 a second traversal, enter protected trees, or modify the plan. Marker spelling,
-refresh rates, summaries, and optional tips belong in README and commit history.
+refresh rates, summaries, and optional tips belong in `docs/` and commit history.
 
 ## Rationale
 

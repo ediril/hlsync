@@ -14,7 +14,7 @@ Replacement files retain their staging-file metadata. HLSync does not currently
 copy old destination modes or ACLs to replacement files. Shared writable trees
 therefore require suitable server creation policy: setgid controls group
 inheritance but does not itself grant group write. An FTP umask or default ACL
-must provide that permission. Concrete setup examples belong in README.
+must provide that permission. Concrete setup examples belong in `docs/`.
 
 ## Rationale
 

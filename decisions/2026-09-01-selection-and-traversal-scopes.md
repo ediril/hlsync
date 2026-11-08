@@ -44,7 +44,7 @@ diagnostic only and is not authorization to create or delete its contents.
 Recursive comparison streams deterministic directory subtrees. Paged comparison
 uses an explicit resume path and reconstructs traversal from a fresh read;
 there is no persisted session or cached comparison cursor. Presentation details
-and command spellings are documented in README.
+and command spellings are documented in README and `docs/`.
 
 ## Rationale
 

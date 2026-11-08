@@ -39,7 +39,7 @@ from redirecting a transfer.
 
 A clean schema break is preferable while the tool is pre-alpha because it
 avoids aliases and migration paths for representations that no longer match
-the model. Current runtime names and CLI usage are documented in README.
+the model. Current runtime names and CLI usage are documented in README and `docs/`.
 
 ## Intentionally excluded
 

@@ -10,7 +10,12 @@ HLSync is source-available under PolyForm Strict 1.0.0. Use is free of charge fo
 
 ## Documentation
 
-- [README](https://github.com/ediril/hlsync/blob/main/README.md): Installation, configuration, synchronization rules, traversal, diff, push, pull, and transfer guarantees.
+- [README](https://github.com/ediril/hlsync/blob/main/README.md): Installation, quick start, and a command overview.
+- [Profiles and mapping](https://github.com/ediril/hlsync/blob/main/docs/profiles.md): Profiles, credentials, and local and remote roots.
+- [Synchronization rules](https://github.com/ediril/hlsync/blob/main/docs/rules.md): Git ignores, common and profile rules, wildcards, and remote protection.
+- [Paths, traversal, and listing](https://github.com/ediril/hlsync/blob/main/docs/paths-and-listing.md): Path selection, recursion depth, and listing.
+- [Diff](https://github.com/ediril/hlsync/blob/main/docs/diff.md): Status markers and pruning previews.
+- [Push and pull](https://github.com/ediril/hlsync/blob/main/docs/push-and-pull.md): Conflicts, deletion, and safe file replacement.
 - [Changelog](https://github.com/ediril/hlsync/blob/main/CHANGELOG.md): Current version history and completed behavior changes.
 - [License](https://github.com/ediril/hlsync/blob/main/LICENSE): Full PolyForm Strict 1.0.0 terms defining permitted uses and restrictions. Commercial use outside those permissions requires a separate paid license. Contact emrah@diril.org for pricing.
 

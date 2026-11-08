@@ -13,7 +13,7 @@ rules. With no explicit match, use the local
 The common rules file has its own version and ordered rules. Seed it once with
 conservative defaults; after creation it belongs to the user. Later releases
 do not merge or restore defaults automatically. Common-rule management does not
-require an active profile. Current defaults and CLI syntax belong in README.
+require an active profile. Current defaults and CLI syntax belong in `docs/`.
 
 Each stored rule has an explicit include or exclude action and a normalized
 profile-relative pattern. A missing target means local; only remote rules

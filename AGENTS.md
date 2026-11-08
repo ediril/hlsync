@@ -68,12 +68,16 @@
   current rationale: model boundaries, safety guarantees, dependencies, or
   consequential tradeoffs. Do not create or update decision files for version
   formats, CLI spelling, symbols, column order, indentation, progress wording,
-  or other small behavior changes. Document current usage in README and explain
-  those changes in commit messages. Consolidate related architectural rationale
+  or other small behavior changes. Document current usage in README or `docs/`
+  and explain those changes in commit messages. Consolidate related architectural rationale
   into existing notes; Git preserves obsolete decisions and minor change history.
 - Use `plans/` only for future work/roadmaps, not decisions already made.
 - Use `social/` for public-facing post drafts or demo narration.
 - Keep `README.md` current and avoid stale claims.
+- Keep `README.md` to the basics: what HLSync is, installation, quick start, a
+  short command overview, and links to `docs/`. Put detailed usage in topic
+  files under `docs/`. Link from README to `docs/` with absolute GitHub URLs,
+  because PyPI renders README without resolving relative links.
 - Capture durable working and documentation directives here. Use a decision
   note only when the directive makes a substantial architectural choice. Keep
   the agent memory file in sync with this file.
