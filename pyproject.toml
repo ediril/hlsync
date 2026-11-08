@@ -51,6 +51,14 @@ version = { attr = "hlsync._version.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "version.json" },
+  { file = "build_backend/*.py" },
+  { git = { commit = true } },
+]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
