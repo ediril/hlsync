@@ -869,3 +869,41 @@ def test_cli_include_excluded_transfers_excluded_paths_over_ftps(
 
     assert invoke("pull", "-I", "cache/sub/page.txt") == 0
     assert (local_root / "cache/sub/page.txt").read_text() == "server"
+
+
+def test_push_of_a_subfolder_keeps_existing_remote_ancestors(
+    tls_ftp_server, tmp_path, monkeypatch
+):
+    port, certificate, remote_root = tls_ftp_server
+    local_root = tmp_path / "local"
+    for root in (local_root, remote_root):
+        (root / "gallery/templates/partials").mkdir(parents=True)
+    (local_root / "gallery/templates/index.php").write_text("index")
+    (local_root / "gallery/templates/partials/head.php").write_text("head")
+    (local_root / "fresh/nested").mkdir(parents=True)
+    (local_root / "fresh/nested/new.txt").write_text("new")
+    monkeypatch.chdir(local_root)
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    store = ConfigurationStore(tmp_path / "configs.json")
+    store.save(ApplicationConfiguration(profiles={
+        "prod": ProfileConfiguration(
+            host="localhost", port=port, remote_root="/", local_root=str(local_root),
+        ),
+    }))
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    monkeypatch.setattr(
+        "hlsync.cli.ExplicitFTPSTransport",
+        lambda profile: ExplicitFTPSTransport(profile, ssl_context=context),
+    )
+
+    def push(path):
+        errors = io.StringIO()
+        status = run(["push", path], store=store, stdout=io.StringIO(), stderr=errors)
+        assert status == 0, errors.getvalue()
+
+    push("gallery/templates")
+    assert (remote_root / "gallery/templates/index.php").read_text() == "index"
+    assert (remote_root / "gallery/templates/partials/head.php").read_text() == "head"
+    push("fresh/nested")
+    assert (remote_root / "fresh/nested/new.txt").read_text() == "new"

@@ -60,6 +60,9 @@ class TreeEntry:
 @dataclass(frozen=True)
 class TreeSnapshot:
     entries: tuple[TreeEntry, ...] = ()
+    # Directories read while walking, including ancestors of a selection whose
+    # own entries are filtered out; each is known to exist.
+    listed_directories: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         ordered = tuple(sorted(self.entries, key=lambda entry: entry.path))

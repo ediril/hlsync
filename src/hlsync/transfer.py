@@ -115,7 +115,7 @@ def _remote_directories_to_create(
     plan: ComparisonPlan,
     remote: TreeSnapshot,
 ) -> tuple[str, ...]:
-    existing = {
+    existing = remote.listed_directories | {
         entry.path for entry in remote.entries if entry.kind == "directory"
     }
     required = {

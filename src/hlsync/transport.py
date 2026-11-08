@@ -230,6 +230,7 @@ class ExplicitFTPSTransport:
         if self._client is None:
             raise TransportError("FTPS transport is not connected")
         entries: list[TreeEntry] = []
+        listed_directories: set[str] = set()
         completed_directories = 0
         discovered_directories = 1
         if directory_counts is not None:
@@ -240,6 +241,8 @@ class ExplicitFTPSTransport:
             if directory_progress is not None:
                 directory_progress(relative_directory)
             listing = self.list_directory(relative_directory, rules)
+            if relative_directory.parts:
+                listed_directories.add(relative_directory.as_posix())
             if artifact_recovery is not None:
                 recoveries = self._recover_artifacts(listing, selector, rules)
                 for recovery in recoveries:
@@ -293,7 +296,7 @@ class ExplicitFTPSTransport:
                 walk(descendant)
 
         walk(PurePosixPath())
-        return TreeSnapshot(tuple(entries))
+        return TreeSnapshot(tuple(entries), frozenset(listed_directories))
 
     def list_directory(
         self,
