@@ -171,16 +171,21 @@ def _append_rules(
     )
 
 
-def _remove_rule(
+def _remove_rules(
     rules: tuple[SyncRule, ...],
-    rule_id: int,
+    rule_ids: tuple[int, ...],
     *,
     scope: str,
-) -> tuple[tuple[SyncRule, ...], SyncRule]:
-    removed = next((rule for rule in rules if rule.id == rule_id), None)
-    if removed is None:
-        raise ConfigurationError(f"{scope} has no rule with id {rule_id}")
-    return tuple(rule for rule in rules if rule.id != rule_id), removed
+) -> tuple[tuple[SyncRule, ...], tuple[SyncRule, ...]]:
+    existing = {rule.id for rule in rules}
+    missing = next((rule_id for rule_id in rule_ids if rule_id not in existing), None)
+    if missing is not None:
+        raise ConfigurationError(f"{scope} has no rule with id {missing}")
+    selected = set(rule_ids)
+    return (
+        tuple(rule for rule in rules if rule.id not in selected),
+        tuple(rule for rule in rules if rule.id in selected),
+    )
 
 
 def _validate_rule_sequence(rules: tuple[SyncRule, ...]) -> tuple[SyncRule, ...]:
@@ -406,11 +411,13 @@ class ApplicationConfiguration:
         self.profiles[profile_name] = profile.with_rules(rules)
         return update
 
-    def remove_rule(self, profile_name: str, rule_id: int) -> SyncRule:
+    def remove_rules(
+        self, profile_name: str, rule_ids: tuple[int, ...]
+    ) -> tuple[SyncRule, ...]:
         profile = self.profiles[profile_name]
-        remaining, removed = _remove_rule(
+        remaining, removed = _remove_rules(
             profile.rules,
-            rule_id,
+            rule_ids,
             scope=f"profile '{profile_name}'",
         )
         self.profiles[profile_name] = profile.with_rules(remaining)
@@ -484,13 +491,13 @@ class CommonRuleConfiguration:
         )
         return CommonRuleConfiguration(rules), update
 
-    def without_rule(
+    def without_rules(
         self,
-        rule_id: int,
-    ) -> tuple[CommonRuleConfiguration, SyncRule]:
-        rules, removed = _remove_rule(
+        rule_ids: tuple[int, ...],
+    ) -> tuple[CommonRuleConfiguration, tuple[SyncRule, ...]]:
+        rules, removed = _remove_rules(
             self.rules,
-            rule_id,
+            rule_ids,
             scope="common synchronization policy",
         )
         return CommonRuleConfiguration(rules), removed

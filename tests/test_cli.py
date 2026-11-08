@@ -6,7 +6,7 @@ import pytest
 
 from hlsync import __version__
 from hlsync.cli import _effective_rules, run
-from hlsync.config import DEFAULT_COMMON_RULES, ConfigurationStore, CommonRuleStore
+from hlsync.config import DEFAULT_COMMON_RULES, CommonRuleStore, ConfigurationStore
 from hlsync.rules import RuleSet, SyncRule
 from hlsync.snapshot import TreeEntry, TreeSnapshot, snapshot_local
 from hlsync.transport import PathOperationError
@@ -491,7 +491,9 @@ def test_common_rules_seed_outside_profiles_and_allow_profile_overrides(
     common_section, profile_section, _ = combined.split("\n\n")
     assert common_section.startswith("Common rules (all profiles):\n")
     assert f"c{exclusion_id}  exclude *.tmp\n" in common_section
-    assert profile_section == "Profile rules ('prod' only):\n  ./\n      1  include *.tmp"
+    assert profile_section == (
+        "Profile rules ('prod' only):\n  ./\n      1  include *.tmp"
+    )
     assert combined.endswith(
         "Profile rules override common rules; later matching rules win.\n"
     )
@@ -501,7 +503,7 @@ def test_common_rules_seed_outside_profiles_and_allow_profile_overrides(
     monkeypatch.chdir(outside)
     assert invoke(["rules", "rm", f"c{inclusion_id}"], store) == (
         0,
-        f"Removed common rule c{inclusion_id}: include **/.DS_Store\n",
+        f"Common rules removed:\n  c{inclusion_id}  include **/.DS_Store\n",
         "",
     )
     monkeypatch.chdir(workspace)
@@ -517,6 +519,43 @@ def test_common_rules_seed_outside_profiles_and_allow_profile_overrides(
         f"Recorded common exclusion rules:\n  c{inclusion_id}  exclude *.bak\n",
         "",
     )
+
+
+def test_rules_rm_removes_several_ids_across_scopes_or_none(
+    tmp_path, monkeypatch
+) -> None:
+    store = ConfigurationStore(tmp_path / "configs.json")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (workspace / name).write_text(name, encoding="utf-8")
+    invoke(
+        [
+            "create", "prod", "--host", "ftp.example.com",
+            "--remote-root", "/public_html", "--local-root", str(workspace),
+        ],
+        store,
+    )
+    monkeypatch.chdir(workspace)
+    assert invoke(["exclude", "a.txt", "b.txt", "c.txt"], store)[0] == 0
+    common_store = CommonRuleStore(tmp_path / "rules.json")
+    before = (store.load().profiles["prod"].rules, common_store.load().rules)
+
+    unknown = invoke(["rules", "rm", "1", "c4", "99"], store)
+    assert unknown[0] == 1
+    assert "profile 'prod' has no rule with id 99" in unknown[2]
+    assert (store.load().profiles["prod"].rules, common_store.load().rules) == before
+
+    assert invoke(["rules", "rm", "3,c4", "1", "c4"], store) == (
+        0,
+        "Common rules removed:\n  c4  exclude **/.DS_Store\n"
+        "Rules removed for profile 'prod':\n"
+        "  1  exclude ./a.txt\n"
+        "  3  exclude ./c.txt\n",
+        "",
+    )
+    assert [rule.id for rule in store.load().profiles["prod"].rules] == [2]
+    assert 4 not in {rule.id for rule in common_store.load().rules}
 
 
 def test_cli_refuses_invalid_profile_mutations(tmp_path) -> None:
@@ -740,7 +779,7 @@ def test_ordered_exclusion_commands_persist_reinclusion(
     assert invoke(["root"], store) == (0, f"{workspace}\n", "")
     assert invoke(["rules", "rm", "8"], store) == (
         0,
-        "Removed rule 8 from profile 'prod': include node_modules/package/**\n",
+        "Rules removed for profile 'prod':\n  8  include node_modules/package/**\n",
         "",
     )
     assert invoke(["include", "composer.json"], store) == (

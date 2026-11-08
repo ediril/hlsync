@@ -22,9 +22,9 @@ from hlsync.config import (
     DEFAULT_PASSWORD_ENV,
     DEFAULT_USERNAME_ENV,
     ApplicationConfiguration,
+    CommonRuleStore,
     ConfigurationError,
     ConfigurationStore,
-    CommonRuleStore,
     ProfileConfiguration,
     RuleUpdate,
     canonical_local_root,
@@ -463,11 +463,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="list or remove synchronization rules",
         usage=(
             "hlsync [PROFILE] rules\n"
-            "       hlsync [PROFILE] rules rm RULE_ID\n"
-            "       hlsync rules -c [rm COMMON_RULE_ID]"
+            "       hlsync [PROFILE] rules rm RULE_ID ...\n"
+            "       hlsync rules -c [rm COMMON_RULE_ID ...]"
         ),
         description=(
-            "List rules, or remove one by its displayed ID with rm. Use -c for "
+            "List rules, or remove them by their displayed IDs with rm. Use -c for "
             "common rules. Add rules with 'hlsync exclude' and 'hlsync include'."
         ),
     )
@@ -476,9 +476,9 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         choices=("rm",),
         metavar="rm",
-        help="remove the rule with the displayed RULE_ID",
+        help="remove the rules with the displayed RULE_IDs",
     )
-    rules_parser.add_argument("rule_id", nargs="?", metavar="RULE_ID")
+    rules_parser.add_argument("rule_ids", nargs="*", metavar="RULE_ID")
     rules_parser.add_argument(
         "-c",
         "--common",
@@ -1218,49 +1218,64 @@ def _manage_rules(
     arguments: argparse.Namespace,
     store: ConfigurationStore,
 ) -> str:
-    if arguments.operation == "rm" and arguments.rule_id is None:
-        raise ConfigurationError("rules rm requires a RULE_ID")
-    if arguments.common_rules or (
-        arguments.rule_id is not None and arguments.rule_id.startswith("c")
-    ):
-        common_store = _common_rule_store(store)
-        common_configuration = common_store.load()
-        if arguments.rule_id is None:
-            formatted = _format_rule_sections(
-                ((COMMON_RULES_HEADING, common_configuration.rules, True),)
-            )
-            if _rules_need_precedence_note(common_configuration.rules):
-                return f"{formatted}\nLater rules win."
-            return formatted
-        common_configuration, removed = common_configuration.without_rule(
-            _parse_rule_id(arguments.rule_id, common_scope=True)
+    identifiers = tuple(
+        dict.fromkeys(
+            value.strip()
+            for operand in arguments.rule_ids
+            for value in operand.split(",")
         )
-        common_store.save(common_configuration)
-        return (
-            f"Removed common rule {_format_rule_id(removed, common_scope=True)}: "
-            f"{removed.action} {_format_rule_expression(removed)}"
-        )
-    configuration, name, profile = _resolve_profile(arguments, store)
-    if arguments.rule_id is None:
-        common_configuration = _common_rule_store(store).load()
-        overview = _format_rule_sections(
-            (
-                (COMMON_RULES_HEADING, common_configuration.rules, True),
-                (f"Profile rules ('{name}' only):", profile.rules, False),
-            )
-        )
-        return (
-            f"{overview}\n\n"
-            "Profile rules override common rules; later matching rules win."
-        )
-    removed = configuration.remove_rule(
-        name,
-        _parse_rule_id(arguments.rule_id, common_scope=False),
     )
-    store.save(configuration)
+    if arguments.operation == "rm" and not identifiers:
+        raise ConfigurationError("rules rm requires a RULE_ID")
+    if "" in identifiers:
+        raise ConfigurationError("rule ids cannot be empty")
+    if not identifiers:
+        return _list_rules(arguments, store)
+    common_ids = tuple(
+        _parse_rule_id(value, common_scope=True)
+        for value in identifiers
+        if arguments.common_rules or value.startswith("c")
+    )
+    profile_ids = tuple(
+        _parse_rule_id(value, common_scope=False)
+        for value in identifiers
+        if not (arguments.common_rules or value.startswith("c"))
+    )
+    reports = []
+    common_store = _common_rule_store(store)
+    common_configuration = common_store.load()
+    if common_ids:
+        common_configuration, removed = common_configuration.without_rules(common_ids)
+        reports.append(
+            _format_rules("", removed, heading="Rules removed", common_scope=True)
+        )
+    if profile_ids:
+        configuration, name, _ = _resolve_profile(arguments, store)
+        removed = configuration.remove_rules(name, profile_ids)
+        reports.append(_format_rules(name, removed, heading="Rules removed"))
+        store.save(configuration)
+    if common_ids:
+        common_store.save(common_configuration)
+    return "\n".join(reports)
+
+
+def _list_rules(arguments: argparse.Namespace, store: ConfigurationStore) -> str:
+    common_rules = _common_rule_store(store).load().rules
+    if arguments.common_rules:
+        formatted = _format_rule_sections(((COMMON_RULES_HEADING, common_rules, True),))
+        if _rules_need_precedence_note(common_rules):
+            return f"{formatted}\nLater rules win."
+        return formatted
+    _, name, profile = _resolve_profile(arguments, store)
+    overview = _format_rule_sections(
+        (
+            (COMMON_RULES_HEADING, common_rules, True),
+            (f"Profile rules ('{name}' only):", profile.rules, False),
+        )
+    )
     return (
-        f"Removed rule {removed.id} from profile '{name}': "
-        f"{removed.action} {_format_rule_expression(removed)}"
+        f"{overview}\n\n"
+        "Profile rules override common rules; later matching rules win."
     )
 
 
