@@ -179,10 +179,14 @@ def test_rule_operands_refuse_shell_expansion_and_keep_wildcards(
     assert invoke(["include", "static/a.webp", "static/b.webp"], store) == (
         1,
         "",
-        "hlsync: error: got multiple paths; "
-        "quote wildcards or separate paths with commas\n",
+        "hlsync: error: got multiple paths; quote wildcards or add -m\n",
     )
     assert (tmp_path / "configs.json").read_text() == before
+    assert invoke(["include", "-m", "static/a.webp", "static/b.webp"], store)[0] == 0
+    assert [rule.pattern for rule in store.load().profiles["prod"].rules] == [
+        "static/a.webp", "static/b.webp",
+    ]
+    assert invoke(["rules", "rm", "1,2"], store)[0] == 0
 
     assert invoke(["exclude", "static/*.webp"], store)[0] == 0
     rules = _effective_rules(store, store.load().profiles["prod"])

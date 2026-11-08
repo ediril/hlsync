@@ -223,10 +223,13 @@ To match file types without a wildcard, name a folder and use `--ext`:
 hlsync include gallery/static --ext jpg,png,webp
 ```
 
-To name several paths in one command, separate them with commas:
+To name several paths in one command, separate them with commas, or pass
+`-m` / `--multiple` to accept space-separated paths, as tab completion and
+scripts produce:
 
 ```console
 hlsync exclude composer.json,composer.lock
+hlsync exclude -m composer.json composer.lock
 ```
 
 A literal filename containing a comma cannot be addressed, because commas

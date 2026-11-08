@@ -415,9 +415,9 @@ def build_parser() -> argparse.ArgumentParser:
             help=rule_change_help[command],
             usage=(
                 f"hlsync [PROFILE] {command} [--remote] "
-                "[--anywhere | --shallow] [--ext EXT] PATH\n"
+                "[--anywhere | --shallow] [--ext EXT] [-m] PATH\n"
                 f"       hlsync {command} -c [--remote] "
-                "[--anywhere | --shallow] [--ext EXT] PATH"
+                "[--anywhere | --shallow] [--ext EXT] [-m] PATH"
             ),
             description=(
                 f"Record {command} rules for the current profile, or for every "
@@ -464,6 +464,12 @@ def build_parser() -> argparse.ArgumentParser:
             "--ext",
             metavar="EXT",
             help="match these comma-separated file extensions inside PATH",
+        )
+        rule_parser.add_argument(
+            "-m",
+            "--multiple",
+            action="store_true",
+            help="accept several space-separated paths",
         )
 
     rules_parser = subparsers.add_parser(
@@ -1101,10 +1107,8 @@ def _change_rules(
     *,
     include: bool,
 ) -> str:
-    if len(arguments.pattern_operands) > 1:
-        raise ConfigurationError(
-            "got multiple paths; quote wildcards or separate paths with commas"
-        )
+    if len(arguments.pattern_operands) > 1 and not arguments.multiple:
+        raise ConfigurationError("got multiple paths; quote wildcards or add -m")
     patterns = normalize_pattern_operands(arguments)
     if arguments.ext is not None:
         patterns = _extension_patterns(patterns or (".",), arguments.ext)
