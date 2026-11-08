@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import glob
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -22,41 +21,6 @@ def _relative_base(profile_root: Path, current_directory: Path) -> PurePosixPath
     except ValueError:
         return PurePosixPath()
     return PurePosixPath(*relative.parts)
-
-
-def expand_path_operands(
-    values: tuple[str, ...],
-    *,
-    profile_root: Path,
-    current_directory: Path,
-) -> tuple[str, ...]:
-    """Expand wildcard operands to the local paths they currently match."""
-    try:
-        current_directory.relative_to(profile_root)
-    except ValueError:
-        expansion_root = profile_root
-    else:
-        expansion_root = current_directory
-    expanded: list[str] = []
-    for value in values:
-        supplied = PurePosixPath(value)
-        if supplied.is_absolute() or ".." in supplied.parts:
-            raise RuleError(
-                "rule paths must be relative to the profile or current directory"
-            )
-        if "*" not in value:
-            expanded.append(value)
-            continue
-        matches = glob.glob(
-            value,
-            root_dir=expansion_root,
-            recursive=True,
-            include_hidden=False,
-        )
-        if not matches:
-            raise RuleError(f"path expression '{value}' matched no local paths")
-        expanded.extend(PurePosixPath(match).as_posix() for match in sorted(matches))
-    return tuple(dict.fromkeys(expanded))
 
 
 def patterns_from_operands(

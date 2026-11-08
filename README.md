@@ -172,12 +172,11 @@ created with default exclusions for version-control metadata and common logs:
 ```
 
 Manage common exclusions and inclusions from any directory with `-c` /
-`--common`. Common operands are reusable patterns rooted at every profile's
-local root; append `/` to target a complete directory tree:
+`--common`. Common paths are rooted at every profile's local root:
 
 ```console
-hlsync exclude -c --pattern '*.tmp'
-hlsync include -c --pattern 'public/*.tmp'
+hlsync exclude -c '*.tmp'
+hlsync include -c 'public/*.tmp'
 hlsync rules -c      # inspect common rules
 hlsync rules rm c4   # c prefix selects common rules
 ```
@@ -195,38 +194,56 @@ IDs remain numeric. IDs identify only current rules and may be reused after a
 rule is removed. HLSync never silently adds new defaults to an existing common
 rules file.
 
-Exclude current paths permanently:
+Each `exclude` or `include` takes one path. A path names that file, or a
+folder and everything in it:
 
 ```console
-hlsync exclude .git node_modules composer.json composer.lock
-hlsync exclude '*.md'
+hlsync exclude run_server.sh
+hlsync exclude node_modules
 ```
 
-Normal wildcard operands are expanded against the current local tree and
-recorded as exact paths. Quote them so the shell does not reject or alter them;
-quoted and shell-expanded matches produce the same path rules.
-
-Use `--pattern` when future matching paths should also be covered:
+A wildcard keeps matching files added later, and it also matches in every
+subfolder. Use `-s` / `--shallow` to match in the named folder only:
 
 ```console
-hlsync exclude --pattern '*.md'       # this directory only
-hlsync exclude --pattern '**/*.log'   # every directory below this point
-hlsync include --pattern 'vendor/**'  # re-include a subtree
+hlsync include 'gallery/static/*.webp'     # every .webp under gallery/static
+hlsync include -s 'gallery/static/*.webp'  # gallery/static itself only
+hlsync exclude '*.log'                     # every .log below this folder
 ```
 
-Use `--anywhere` (or `--any`) to match a name at every depth, including future
-files. It works with both `exclude` and `include`, and replaces `--pattern`:
+Quote wildcards. Without quotes, the shell replaces the wildcard with the
+matching file names before HLSync runs, and HLSync refuses the resulting list
+with `got multiple paths`. If only one file matches, HLSync cannot tell and
+records that file. In zsh, `alias hlsync='noglob hlsync'` in
+`~/.zshrc` passes wildcards through without quotes.
+
+To match file types without a wildcard, name a folder and use `--ext`:
 
 ```console
-hlsync exclude --anywhere filename.ext  # current directory and descendants
-hlsync exclude --any '*.log'            # quote wildcards to preserve the pattern
-hlsync exclude -c --anywhere cache/     # matching directory trees in every profile
+hlsync include gallery/static --ext jpg,png,webp
 ```
 
-`*` matches within one path segment; a complete `**` segment crosses directory
-levels. Patterns are rooted where the command runs. HLSync rules are not
-Gitignore syntax: `!`, `?`, bracket patterns, absolute paths, parent traversal,
-and partial-segment `**` are rejected.
+To name several paths in one command, separate them with commas:
+
+```console
+hlsync exclude composer.json,composer.lock
+```
+
+A literal filename containing a comma cannot be addressed, because commas
+separate paths.
+
+Use `--anywhere` (or `--any`) to match a plain name at every depth below the
+current folder:
+
+```console
+hlsync exclude --anywhere .DS_Store
+hlsync exclude -c --anywhere cache/     # matching folders in every profile
+```
+
+Rules are rooted where the command runs. `*` matches within one name, and a
+complete `**` segment spans any number of folders; it is accepted but never
+needed. HLSync rules are not Gitignore syntax: `!`, `?`, bracket patterns,
+absolute paths, parent traversal, and partial-segment `**` are rejected.
 
 Local rules define the authoritative local set. Remote rules instead protect
 server-side paths from synchronization:
@@ -253,11 +270,12 @@ redundant exact rules but preserves ambiguous wildcard overlaps.
 
 ```console
 hlsync rules
-hlsync rules rm 3
+hlsync rules rm 3 5 c4
 ```
 
-Multiple operands and comma-separated groups are accepted. A literal filename
-containing a comma cannot be addressed because commas delimit groups.
+`rules rm` takes several IDs, as separate operands or comma groups. Every ID is
+checked before any rule is removed. `hlsync rules` describes wildcards in words,
+such as `*.webp (all subfolders)` or `*.webp (this folder only)`.
 
 ## Paths and traversal
 

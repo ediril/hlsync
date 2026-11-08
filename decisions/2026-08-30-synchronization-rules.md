@@ -22,6 +22,13 @@ The explicit pattern language supports segment-local `*` and complete `**`
 segments across directory levels. Reject absolute paths and parent traversal.
 Git-ignore syntax belongs to its separate maintained matcher.
 
+Rule commands record wildcards as patterns, never as a snapshot of current
+matches, and a wildcard also matches in subfolders unless `--shallow` limits it
+to the named folder. The shell expands unquoted wildcards before HLSync runs and
+leaves no trace of the original pattern, so rule commands accept one operand and
+take several paths only as a comma group. Several operands are refused rather
+than recorded as exact paths.
+
 Rule IDs are positive integers scoped to their storage files, derived as the
 highest current ID plus one. They are disposable removal handles, not lasting
 model identity: deleted IDs can be reused and no allocation counter is stored.

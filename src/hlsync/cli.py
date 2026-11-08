@@ -41,7 +41,6 @@ from hlsync.rules import (
     RuleError,
     RuleSet,
     SyncRule,
-    expand_path_operands,
     patterns_from_common_operands,
     patterns_from_operands,
     patterns_from_remote_operands,
@@ -416,9 +415,9 @@ def build_parser() -> argparse.ArgumentParser:
             help=rule_change_help[command],
             usage=(
                 f"hlsync [PROFILE] {command} [--remote] "
-                "[--pattern | --anywhere] PATH ...\n"
+                "[--anywhere | --shallow] [--ext EXT] PATH\n"
                 f"       hlsync {command} -c [--remote] "
-                "[--pattern | --anywhere] PATH ..."
+                "[--anywhere | --shallow] [--ext EXT] PATH"
             ),
             description=(
                 f"Record {command} rules for the current profile, or for every "
@@ -427,9 +426,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
         add_pattern_operands(
             rule_parser,
-            required=True,
+            required=False,
             metavar="PATH",
-            help_text="paths, wildcards, or comma-separated groups",
+            help_text=(
+                "a path, a quoted wildcard, or comma-separated paths; "
+                "wildcards also match in subfolders"
+            ),
         )
         rule_parser.add_argument(
             "--remote",
@@ -438,9 +440,10 @@ def build_parser() -> argparse.ArgumentParser:
         )
         rule_matching = rule_parser.add_mutually_exclusive_group()
         rule_matching.add_argument(
-            "--pattern",
+            "-s",
+            "--shallow",
             action="store_true",
-            help="record operands as reusable wildcard patterns",
+            help="match wildcards in the named folder only, not its subfolders",
         )
         rule_matching.add_argument(
             "--anywhere",
@@ -456,6 +459,11 @@ def build_parser() -> argparse.ArgumentParser:
             dest="common_rules",
             action="store_true",
             help="record a rule shared by every profile",
+        )
+        rule_parser.add_argument(
+            "--ext",
+            metavar="EXT",
+            help="match these comma-separated file extensions inside PATH",
         )
 
     rules_parser = subparsers.add_parser(
@@ -1022,16 +1030,26 @@ def _rule_display_location(rule: SyncRule) -> tuple[str, str]:
         None,
     )
     if wildcard_index is None:
-        parent = parts[:-1]
-        return _rule_group_label(parent), parts[-1]
-    if wildcard_index == 0 and parts[0] == "**":
-        expression = "/".join(parts[1:]) or "all contents"
-        return "Everywhere", expression
-    parent = parts[:wildcard_index]
-    expression = "/".join(parts[wildcard_index:])
-    if expression == "**":
-        expression = "all contents"
-    return _rule_group_label(parent), expression
+        return _rule_group_label(parts[:-1]), parts[-1]
+    if parts[0] == "**":
+        return "Everywhere", _describe_wildcards(parts, everywhere=True)
+    return _rule_group_label(parts[:wildcard_index]), _describe_wildcards(
+        parts[wildcard_index:], everywhere=False
+    )
+
+
+def _describe_wildcards(parts: tuple[str, ...], *, everywhere: bool) -> str:
+    if parts == ("**",):
+        return "all contents"
+    deep = parts[0] == "**"
+    body = parts[1:] if deep else parts
+    tree = len(body) > 1 and body[-1] == "**"
+    if tree:
+        body = body[:-1]
+    text = "/".join(body) + ("/" if tree else "")
+    if everywhere or "**" in body:
+        return text
+    return f"{text} (all subfolders)" if deep else f"{text} (this folder only)"
 
 
 def _rule_group_label(parts: tuple[str, ...]) -> str:
@@ -1054,7 +1072,14 @@ def _rules_need_precedence_note(rules: tuple[SyncRule, ...]) -> bool:
 
 
 def _format_rule_expression(rule: SyncRule) -> str:
-    return rule.pattern if "*" in rule.pattern else f"./{rule.pattern}"
+    if "*" not in rule.pattern:
+        return f"./{rule.pattern}"
+    group, expression = _rule_display_location(rule)
+    if group == "Everywhere":
+        return f"{expression} (everywhere)"
+    if expression == "all contents":
+        return f"{group} (all contents)"
+    return f"{group}{expression}"
 
 
 def _format_rule_id(rule: SyncRule, *, common_scope: bool) -> str:
@@ -1076,10 +1101,18 @@ def _change_rules(
     *,
     include: bool,
 ) -> str:
+    if len(arguments.pattern_operands) > 1:
+        raise ConfigurationError(
+            "got multiple paths; quote wildcards or separate paths with commas"
+        )
     patterns = normalize_pattern_operands(arguments)
+    if arguments.ext is not None:
+        patterns = _extension_patterns(patterns or (".",), arguments.ext)
     target = "remote" if arguments.remote else "local"
     if not patterns:
         raise ConfigurationError(f"{arguments.command} requires at least one path")
+    if not arguments.anywhere and not arguments.shallow:
+        patterns = tuple(_reach_subfolders(pattern) for pattern in patterns)
     if arguments.anywhere:
         for pattern in patterns:
             path = PurePosixPath(pattern)
@@ -1111,22 +1144,13 @@ def _change_rules(
     configuration, name, profile = _resolve_profile(arguments, store)
     root = _require_local_root(name, profile)
     current_directory = _effective_current_directory(arguments, root)
-    operands = (
-        patterns
-        if arguments.pattern or arguments.anywhere or arguments.remote
-        else expand_path_operands(
-            patterns,
-            profile_root=root,
-            current_directory=current_directory,
-        )
-    )
     normalizer = (
         patterns_from_remote_operands
         if arguments.remote
         else patterns_from_operands
     )
     normalized = normalizer(
-        operands, profile_root=root, current_directory=current_directory
+        patterns, profile_root=root, current_directory=current_directory
     )
     update = configuration.append_rules(
         name,
@@ -1137,6 +1161,27 @@ def _change_rules(
     )
     store.save(configuration)
     return _format_rule_update(name, update, include=include, target=target)
+
+
+def _extension_patterns(
+    folders: tuple[str, ...], extensions: str
+) -> tuple[str, ...]:
+    names = tuple(extension.strip().lstrip(".") for extension in extensions.split(","))
+    if any(not name or "/" in name or "*" in name for name in names):
+        raise ConfigurationError("--ext takes extensions such as jpg,png,webp")
+    if any("*" in folder for folder in folders):
+        raise ConfigurationError("--ext takes a folder, not a wildcard")
+    return tuple(
+        f"{folder.rstrip('/') or '.'}/*.{name}" for folder in folders for name in names
+    )
+
+
+def _reach_subfolders(pattern: str) -> str:
+    path = PurePosixPath(pattern)
+    if "*" not in pattern or "**" in path.parts or not path.parts:
+        return pattern
+    tree = "/" if pattern.endswith("/") else ""
+    return PurePosixPath(*path.parts[:-1], "**", path.parts[-1]).as_posix() + tree
 
 
 def _format_rule_update(
