@@ -93,7 +93,7 @@ def patterns_from_operands(
     return tuple(normalized)
 
 
-def patterns_from_global_operands(
+def patterns_from_common_operands(
     values: tuple[str, ...],
     *,
     trailing_slash_tree: bool = True,
@@ -102,13 +102,13 @@ def patterns_from_global_operands(
     normalized: list[str] = []
     for value in values:
         if not isinstance(value, str) or not value.strip():
-            raise RuleError("global rule patterns must be non-empty strings")
+            raise RuleError("common rule patterns must be non-empty strings")
         pattern = value.strip()
         supplied = PurePosixPath(
             pattern if trailing_slash_tree else pattern.rstrip("/")
         )
         if supplied.is_absolute() or ".." in supplied.parts:
-            raise RuleError("global rules must be relative to the profile root")
+            raise RuleError("common rules must be relative to the profile root")
         if trailing_slash_tree and pattern.endswith("/"):
             supplied = supplied / "**"
         try:

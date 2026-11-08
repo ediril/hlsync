@@ -24,7 +24,7 @@ from hlsync.config import (
     ApplicationConfiguration,
     ConfigurationError,
     ConfigurationStore,
-    GlobalRuleStore,
+    CommonRuleStore,
     ProfileConfiguration,
     RuleUpdate,
     canonical_local_root,
@@ -42,7 +42,7 @@ from hlsync.rules import (
     RuleSet,
     SyncRule,
     expand_path_operands,
-    patterns_from_global_operands,
+    patterns_from_common_operands,
     patterns_from_operands,
     patterns_from_remote_operands,
 )
@@ -115,16 +115,6 @@ class _PendingDiffOutput:
     entry: ComparisonEntry
     collapsed_paths: frozenset[str]
     display_root: PurePosixPath | None
-
-
-@dataclass(frozen=True)
-class _DisplayedRule:
-    rule: SyncRule
-    global_scope: bool
-
-    @property
-    def identifier(self) -> str:
-        return _format_rule_id(self.rule, global_scope=self.global_scope)
 
 
 CANONICAL_COMMANDS = (
@@ -311,8 +301,8 @@ def _resolve_invocation(
 
 def _validate_profile_prefix(arguments: argparse.Namespace) -> None:
     profile_name = getattr(arguments, "profile_prefix", None)
-    if profile_name is not None and getattr(arguments, "global_rules", False):
-        raise ConfigurationError("a profile prefix cannot be combined with --global")
+    if profile_name is not None and getattr(arguments, "common_rules", False):
+        raise ConfigurationError("a profile prefix cannot be combined with --common")
     if profile_name is not None and arguments.command not in PROFILE_AWARE_COMMANDS:
         raise ConfigurationError(
             f"profile prefix '{profile_name}' cannot be used with "
@@ -427,12 +417,12 @@ def build_parser() -> argparse.ArgumentParser:
             usage=(
                 f"hlsync [PROFILE] {command} [--remote] "
                 "[--pattern | --anywhere] PATH ...\n"
-                f"       hlsync {command} -g [--remote] "
+                f"       hlsync {command} -c [--remote] "
                 "[--pattern | --anywhere] PATH ..."
             ),
             description=(
                 f"Record {command} rules for the current profile, or for every "
-                "profile with -g. List rules with 'hlsync rules'."
+                "profile with -c. List rules with 'hlsync rules'."
             ),
         )
         add_pattern_operands(
@@ -457,13 +447,13 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help=(
                 "match names at any depth below the current directory; "
-                "-g: every profile"
+                "-c: every profile"
             ),
         )
         rule_parser.add_argument(
-            "-g",
-            "--global",
-            dest="global_rules",
+            "-c",
+            "--common",
+            dest="common_rules",
             action="store_true",
             help="record a rule shared by every profile",
         )
@@ -474,11 +464,11 @@ def build_parser() -> argparse.ArgumentParser:
         usage=(
             "hlsync [PROFILE] rules\n"
             "       hlsync [PROFILE] rules rm RULE_ID\n"
-            "       hlsync rules -g [rm GLOBAL_RULE_ID]"
+            "       hlsync rules -c [rm COMMON_RULE_ID]"
         ),
         description=(
-            "List rules, or remove one by its displayed ID with rm. Use -g for "
-            "global rules. Add rules with 'hlsync exclude' and 'hlsync include'."
+            "List rules, or remove one by its displayed ID with rm. Use -c for "
+            "common rules. Add rules with 'hlsync exclude' and 'hlsync include'."
         ),
     )
     rules_parser.add_argument(
@@ -490,9 +480,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rules_parser.add_argument("rule_id", nargs="?", metavar="RULE_ID")
     rules_parser.add_argument(
-        "-g",
-        "--global",
-        dest="global_rules",
+        "-c",
+        "--common",
+        dest="common_rules",
         action="store_true",
         help="manage rules shared by every profile",
     )
@@ -807,22 +797,22 @@ def _create_profile(
         f"Created FTPS profile '{name}'.\n"
         f"Mapped '{local_root}' to '{name}:{profile.remote_root}'."
     )
-    _global_rule_store(store).load()
+    _common_rule_store(store).load()
     store.save(configuration)
     return message
 
 
-def _global_rule_store(store: ConfigurationStore) -> GlobalRuleStore:
-    return GlobalRuleStore(store.path.with_name("rules.json"))
+def _common_rule_store(store: ConfigurationStore) -> CommonRuleStore:
+    return CommonRuleStore(store.path.with_name("rules.json"))
 
 
 def _effective_rules(
     store: ConfigurationStore,
     profile: ProfileConfiguration,
 ) -> RuleSet:
-    global_rules = _global_rule_store(store).load().rules
+    common_rules = _common_rule_store(store).load().rules
     return RuleSet.layered(
-        global_rules,
+        common_rules,
         profile.rules,
         gitignores=GitIgnores(Path(profile.local_root)) if profile.local_root else None,
     )
@@ -939,17 +929,17 @@ def _format_rules(
     rules: tuple[SyncRule, ...],
     *,
     heading: str,
-    global_scope: bool = False,
+    common_scope: bool = False,
 ) -> str:
     scope_heading = (
-        f"Global {heading.lower()}"
-        if global_scope
+        f"Common {heading.lower()}"
+        if common_scope
         else f"{heading} for profile '{name}'"
     )
     if not rules:
         return f"No {scope_heading.lower()}."
     identifiers = {
-        rule.id: _format_rule_id(rule, global_scope=global_scope) for rule in rules
+        rule.id: _format_rule_id(rule, common_scope=common_scope) for rule in rules
     }
     width = max(len(identifier) for identifier in identifiers.values())
     return "\n".join(
@@ -964,35 +954,42 @@ def _format_rules(
     )
 
 
-def _format_rule_overview(
-    *,
-    profile_name: str | None,
-    global_rules: tuple[SyncRule, ...],
-    profile_rules: tuple[SyncRule, ...] = (),
+COMMON_RULES_HEADING = "Common rules (all profiles):"
+
+
+def _format_rule_sections(
+    sections: tuple[tuple[str, tuple[SyncRule, ...], bool], ...],
 ) -> str:
-    displayed = tuple(
-        _DisplayedRule(rule, True) for rule in global_rules
-    ) + tuple(_DisplayedRule(rule, False) for rule in profile_rules)
-    scope = (
-        "global rules"
-        if profile_name is None
-        else f"rules for profile '{profile_name}'"
+    width = max(
+        (
+            len(_format_rule_id(rule, common_scope=common_scope))
+            for _, rules, common_scope in sections
+            for rule in rules
+        ),
+        default=0,
     )
-    if not displayed:
-        return f"No {scope}."
-    heading = (
-        "Global rules:"
-        if profile_name is None
-        else f"Rules for profile '{profile_name}':"
+    return "\n\n".join(
+        _format_rule_section(heading, rules, common_scope=common_scope, width=width)
+        for heading, rules, common_scope in sections
     )
-    width = max(len(entry.identifier) for entry in displayed)
+
+
+def _format_rule_section(
+    heading: str,
+    rules: tuple[SyncRule, ...],
+    *,
+    common_scope: bool,
+    width: int,
+) -> str:
+    if not rules:
+        return f"{heading}\n  (none)"
     populated_targets = tuple(
-        (label, tuple(entry for entry in displayed if entry.rule.target == target))
-        for label, target in (("Local", "local"), ("Remote", "remote"))
-        if any(entry.rule.target == target for entry in displayed)
+        (label, tuple(rule for rule in rules if rule.target == target))
+        for label, target in (("Local paths", "local"), ("Remote paths", "remote"))
+        if any(rule.target == target for rule in rules)
     )
     show_target_headings = len(populated_targets) > 1 or (
-        populated_targets and populated_targets[0][0] == "Remote"
+        populated_targets[0][0] == "Remote paths"
     )
     lines = [heading]
     for target_heading, target_rules in populated_targets:
@@ -1000,24 +997,20 @@ def _format_rule_overview(
         if show_target_headings:
             lines.append(f"  {target_heading}:")
             group_indent = "    "
-        groups: dict[str, list[tuple[_DisplayedRule, str]]] = {}
-        for entry in target_rules:
-            group, expression = _rule_display_location(entry.rule)
-            groups.setdefault(group, []).append((entry, expression))
+        groups: dict[str, list[tuple[SyncRule, str]]] = {}
+        for rule in target_rules:
+            group, expression = _rule_display_location(rule)
+            groups.setdefault(group, []).append((rule, expression))
         for group in sorted(groups, key=_rule_group_key):
             lines.append(f"{group_indent}{group}")
-            for entry, expression in sorted(
+            for rule, expression in sorted(
                 groups[group],
-                key=lambda item: (
-                    item[1].casefold(),
-                    item[1],
-                    item[0].global_scope is False,
-                    item[0].rule.id,
-                ),
+                key=lambda item: (item[1].casefold(), item[1], item[0].id),
             ):
+                identifier = _format_rule_id(rule, common_scope=common_scope)
                 lines.append(
-                    f"{group_indent}  {entry.identifier:>{width}}  "
-                    f"{entry.rule.action:<7} {expression}"
+                    f"{group_indent}  {identifier:>{width}}  "
+                    f"{rule.action:<7} {expression}"
                 )
     return "\n".join(lines)
 
@@ -1064,15 +1057,15 @@ def _format_rule_expression(rule: SyncRule) -> str:
     return rule.pattern if "*" in rule.pattern else f"./{rule.pattern}"
 
 
-def _format_rule_id(rule: SyncRule, *, global_scope: bool) -> str:
-    return f"g{rule.id}" if global_scope else str(rule.id)
+def _format_rule_id(rule: SyncRule, *, common_scope: bool) -> str:
+    return f"c{rule.id}" if common_scope else str(rule.id)
 
 
-def _parse_rule_id(value: str, *, global_scope: bool) -> int:
-    identifier = value[1:] if global_scope and value.startswith("g") else value
-    valid_prefix = not global_scope or value.startswith("g")
+def _parse_rule_id(value: str, *, common_scope: bool) -> int:
+    identifier = value[1:] if common_scope and value.startswith("c") else value
+    valid_prefix = not common_scope or value.startswith("c")
     if not valid_prefix or not identifier.isdigit() or int(identifier) < 1:
-        expected = "g-prefixed (for example g3)" if global_scope else "numeric"
+        expected = "c-prefixed (for example c3)" if common_scope else "numeric"
         raise ConfigurationError(f"rule id must be {expected} in this scope")
     return int(identifier)
 
@@ -1095,10 +1088,10 @@ def _change_rules(
                     "--anywhere requires relative names or patterns"
                 )
         patterns = tuple(f"**/{pattern}" for pattern in patterns)
-    if arguments.global_rules:
-        global_store = _global_rule_store(store)
-        configuration = global_store.load()
-        normalized = patterns_from_global_operands(
+    if arguments.common_rules:
+        common_store = _common_rule_store(store)
+        configuration = common_store.load()
+        normalized = patterns_from_common_operands(
             patterns,
             trailing_slash_tree=not arguments.remote,
         )
@@ -1107,12 +1100,12 @@ def _change_rules(
             normalized,
             target=target,
         )
-        global_store.save(configuration)
+        common_store.save(configuration)
         return _format_rule_update(
             "",
             update,
             include=include,
-            global_scope=True,
+            common_scope=True,
             target=target,
         )
     configuration, name, profile = _resolve_profile(arguments, store)
@@ -1140,7 +1133,7 @@ def _change_rules(
         "include" if include else "exclude",
         normalized,
         target=target,
-        base_rules=_global_rule_store(store).load().rules,
+        base_rules=_common_rule_store(store).load().rules,
     )
     store.save(configuration)
     return _format_rule_update(name, update, include=include, target=target)
@@ -1151,19 +1144,19 @@ def _format_rule_update(
     update: RuleUpdate,
     *,
     include: bool,
-    global_scope: bool = False,
+    common_scope: bool = False,
     target: str = "local",
 ) -> str:
-    scope = "global synchronization policy" if global_scope else f"profile '{name}'"
+    scope = "common synchronization policy" if common_scope else f"profile '{name}'"
     if update.added and update.removed:
         lines = [f"Updated synchronization rules for {scope}:"]
         lines.extend(
-            f"  added    {_format_rule_id(rule, global_scope=global_scope)}  "
+            f"  added    {_format_rule_id(rule, common_scope=common_scope)}  "
             f"{rule.action:<7} {_format_rule_expression(rule)}"
             for rule in update.added
         )
         lines.extend(
-            f"  removed  {_format_rule_id(rule, global_scope=global_scope)}  "
+            f"  removed  {_format_rule_id(rule, common_scope=common_scope)}  "
             f"{rule.action:<7} {_format_rule_expression(rule)}"
             for rule in update.removed
         )
@@ -1172,14 +1165,14 @@ def _format_rule_update(
         action = "Inclusion" if include else "Exclusion"
         if target == "remote":
             action = f"Remote {action.lower()}"
-        if global_scope:
+        if common_scope:
             identifiers = tuple(
-                _format_rule_id(rule, global_scope=True) for rule in update.added
+                _format_rule_id(rule, common_scope=True) for rule in update.added
             )
             width = max(len(identifier) for identifier in identifiers)
             return "\n".join(
                 (
-                    f"Recorded global {action.lower()} rules:",
+                    f"Recorded common {action.lower()} rules:",
                     *(
                         f"  {identifier:>{width}}  {rule.action:<7} "
                         f"{_format_rule_expression(rule)}"
@@ -1199,8 +1192,8 @@ def _format_rule_update(
         if target == "remote":
             result = f"remotely {result}"
         remaining_scope = (
-            "global synchronization policy"
-            if global_scope
+            "common synchronization policy"
+            if common_scope
             else f"policy for profile '{name}'"
         )
         lines = [
@@ -1208,7 +1201,7 @@ def _format_rule_update(
             "removed the unnecessary rules:",
         ]
         identifiers = tuple(
-            _format_rule_id(rule, global_scope=global_scope)
+            _format_rule_id(rule, common_scope=common_scope)
             for rule in update.removed
         )
         width = max(len(identifier) for identifier in identifiers)
@@ -1227,42 +1220,42 @@ def _manage_rules(
 ) -> str:
     if arguments.operation == "rm" and arguments.rule_id is None:
         raise ConfigurationError("rules rm requires a RULE_ID")
-    if arguments.global_rules or (
-        arguments.rule_id is not None and arguments.rule_id.startswith("g")
+    if arguments.common_rules or (
+        arguments.rule_id is not None and arguments.rule_id.startswith("c")
     ):
-        global_store = _global_rule_store(store)
-        global_configuration = global_store.load()
+        common_store = _common_rule_store(store)
+        common_configuration = common_store.load()
         if arguments.rule_id is None:
-            formatted = _format_rule_overview(
-                profile_name=None,
-                global_rules=global_configuration.rules,
+            formatted = _format_rule_sections(
+                ((COMMON_RULES_HEADING, common_configuration.rules, True),)
             )
-            if _rules_need_precedence_note(global_configuration.rules):
+            if _rules_need_precedence_note(common_configuration.rules):
                 return f"{formatted}\nLater rules win."
             return formatted
-        global_configuration, removed = global_configuration.without_rule(
-            _parse_rule_id(arguments.rule_id, global_scope=True)
+        common_configuration, removed = common_configuration.without_rule(
+            _parse_rule_id(arguments.rule_id, common_scope=True)
         )
-        global_store.save(global_configuration)
+        common_store.save(common_configuration)
         return (
-            f"Removed global rule {_format_rule_id(removed, global_scope=True)}: "
+            f"Removed common rule {_format_rule_id(removed, common_scope=True)}: "
             f"{removed.action} {_format_rule_expression(removed)}"
         )
     configuration, name, profile = _resolve_profile(arguments, store)
     if arguments.rule_id is None:
-        global_configuration = _global_rule_store(store).load()
-        overview = _format_rule_overview(
-            profile_name=name,
-            global_rules=global_configuration.rules,
-            profile_rules=profile.rules,
+        common_configuration = _common_rule_store(store).load()
+        overview = _format_rule_sections(
+            (
+                (COMMON_RULES_HEADING, common_configuration.rules, True),
+                (f"Profile rules ('{name}' only):", profile.rules, False),
+            )
         )
         return (
             f"{overview}\n\n"
-            "Profile rules override global rules; later matching rules win."
+            "Profile rules override common rules; later matching rules win."
         )
     removed = configuration.remove_rule(
         name,
-        _parse_rule_id(arguments.rule_id, global_scope=False),
+        _parse_rule_id(arguments.rule_id, common_scope=False),
     )
     store.save(configuration)
     return (

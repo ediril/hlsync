@@ -17,7 +17,7 @@ for one command without scanning siblings or following symlinked ignore files.
 Keep public paths profile-relative and never copy ignore patterns into stored
 configuration.
 
-Explicit HLSync rules override Git ignores: global rules first, profile rules
+Explicit HLSync rules override Git ignores: common rules first, profile rules
 last. Rule cleanup must preserve an inclusion needed to override the baseline.
 Use the same effective RuleSet for local and remote classification across list,
 diff, push, and pull. Git ignores affect local eligibility, not remote protection.

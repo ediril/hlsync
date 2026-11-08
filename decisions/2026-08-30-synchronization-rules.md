@@ -4,20 +4,20 @@ Date: 2026-08-30
 
 ## Decision
 
-Explicit synchronization policy has two ordered layers: global rules from
+Explicit synchronization policy has two ordered layers: common rules from
 `~/.hlsync/rules.json`, followed by rules stored in the active profile. The
-last matching explicit rule wins, allowing profile rules to override global
+last matching explicit rule wins, allowing profile rules to override common
 rules. With no explicit match, use the local
 [Git-ignore baseline](2026-09-14-gitignore-defaults.md); otherwise include the path.
 
-The global file has its own version and ordered rules. Seed it once with
+The common rules file has its own version and ordered rules. Seed it once with
 conservative defaults; after creation it belongs to the user. Later releases
-do not merge or restore defaults automatically. Global management does not
+do not merge or restore defaults automatically. Common-rule management does not
 require an active profile. Current defaults and CLI syntax belong in README.
 
 Each stored rule has an explicit include or exclude action and a normalized
 profile-relative pattern. A missing target means local; only remote rules
-persist an explicit remote target. Global patterns are rooted at each profile.
+persist an explicit remote target. Common patterns are rooted at each profile.
 The explicit pattern language supports segment-local `*` and complete `**`
 segments across directory levels. Reject absolute paths and parent traversal.
 Git-ignore syntax belongs to its separate maintained matcher.
@@ -44,7 +44,7 @@ behavior. Child inclusions cannot pierce an excluded remote directory.
 
 ## Rationale
 
-A user-owned global layer removes repetitive setup while keeping policy
+A user-owned common layer removes repetitive setup while keeping policy
 editable. Applying profile rules last preserves deployment-specific exceptions.
 Separate storage scopes prevent administrative handles from becoming a shared
 identity model. Proof-based cleanup avoids changing precedence through a
@@ -52,7 +52,7 @@ presentation-oriented simplification.
 
 ## Intentionally excluded
 
-- Automatically merging defaults into existing global configuration.
+- Automatically merging defaults into existing common configuration.
 - Inferring remote entry kinds when recording rules.
 - Entering remote-excluded directories for narrower child rules.
 - Persisting rule-ID allocation history or renumbering surviving rules.

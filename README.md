@@ -147,7 +147,7 @@ mapped local root is inside a Git repository, this includes all ancestor
 `.gitignore` files up to the nearest repository root, plus files inside the
 mapped tree. Without an enclosing repository, ignore scope starts at the mapped
 root. Git worktrees are supported; no Git installation is needed.
-Explicit HLSync rules override this baseline; profile rules override global rules.
+Explicit HLSync rules override this baseline; profile rules override common rules.
 To deploy a Git-ignored path, use `hlsync include vendor/` (or a specific file).
 Ignore files above the repository root, Git's global excludes, and the Git index
 are not consulted; matching tracked files are excluded too.
@@ -156,7 +156,7 @@ are not consulted; matching tracked files are excluded too.
 files that are already deployed are deleted remotely. Without `-p`, their remote
 copies are left alone; remote exclusion rules protect paths even when pruning.
 
-Global rules live in `~/.hlsync/rules.json`, apply to every profile, and are
+Common rules live in `~/.hlsync/rules.json`, apply to every profile, and are
 created with default exclusions for version-control metadata and common logs:
 
 ```text
@@ -171,23 +171,28 @@ created with default exclusions for version-control metadata and common logs:
 **/error_log
 ```
 
-Manage global exclusions and inclusions from any directory with `-g` /
-`--global`. Global operands are reusable patterns rooted at every profile's
+Manage common exclusions and inclusions from any directory with `-c` /
+`--common`. Common operands are reusable patterns rooted at every profile's
 local root; append `/` to target a complete directory tree:
 
 ```console
-hlsync exclude -g --pattern '*.tmp'
-hlsync include -g --pattern 'public/*.tmp'
-hlsync rules -g      # inspect global rules
-hlsync rules rm g4   # g prefix selects global rules
+hlsync exclude -c --pattern '*.tmp'
+hlsync include -c --pattern 'public/*.tmp'
+hlsync rules -c      # inspect common rules
+hlsync rules rm c4   # c prefix selects common rules
 ```
 
-Global rules apply first and profile rules apply afterward, so an ordinary
-profile inclusion can override a global exclusion. `hlsync rules` merges both
-layers into one folder-grouped view, placing matching profile rules after
-global rules. Global rules have `g`-prefixed IDs such as `g4`; profile rule IDs
-remain numeric. IDs identify only current rules and may be reused after a rule
-is removed. HLSync never silently adds new defaults to an existing global
+Profile rules are the extra rules for one profile only. Common rules apply
+first and profile rules apply afterward, so a profile rule overrides a common
+rule for the paths both match. That includes broad profile inclusions: after
+`hlsync include gallery/`, a `.DS_Store` inside `gallery/` is included despite
+the common exclusion. Add `hlsync exclude --anywhere .DS_Store` to the profile
+to exclude it there again.
+
+`hlsync rules` shows the common rules first and then the profile rules, each
+grouped by folder. Common rules have `c`-prefixed IDs such as `c4`; profile rule
+IDs remain numeric. IDs identify only current rules and may be reused after a
+rule is removed. HLSync never silently adds new defaults to an existing common
 rules file.
 
 Exclude current paths permanently:
@@ -215,7 +220,7 @@ files. It works with both `exclude` and `include`, and replaces `--pattern`:
 ```console
 hlsync exclude --anywhere filename.ext  # current directory and descendants
 hlsync exclude --any '*.log'            # quote wildcards to preserve the pattern
-hlsync exclude -g --anywhere cache/     # matching directory trees in every profile
+hlsync exclude -c --anywhere cache/     # matching directory trees in every profile
 ```
 
 `*` matches within one path segment; a complete `**` segment crosses directory
@@ -238,7 +243,7 @@ and everything beneath it are left untouched without traversing the directory.
 A matching remote inclusion removes or overrides that boundary and returns the
 path to normal push policy. Remote directory boundaries cannot be pierced by a
 more specific child inclusion. `hlsync rules` groups the two rule targets under
-`Local` and `Remote`.
+`Local paths` and `Remote paths`.
 
 Local rules keep the original compact JSON form. A missing stored `target`
 means local; only remote rules add `"target": "remote"`.

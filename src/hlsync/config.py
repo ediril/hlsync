@@ -12,12 +12,12 @@ from hlsync.rules import RuleAction, RuleError, RuleSet, RuleTarget, SyncRule
 from hlsync.storage import write_json_atomic
 
 CONFIG_VERSION = 9
-GLOBAL_RULES_VERSION = 1
+COMMON_RULES_VERSION = 1
 PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_USERNAME_ENV = "PROD_FTPS_USERNAME"
 DEFAULT_PASSWORD_ENV = "PROD_FTPS_PASSWORD"
-DEFAULT_GLOBAL_RULES = (
+DEFAULT_COMMON_RULES = (
     SyncRule(1, "exclude", "**/.git/**"),
     SyncRule(2, "exclude", "**/.svn/**"),
     SyncRule(3, "exclude", "**/.hg/**"),
@@ -459,8 +459,8 @@ class ApplicationConfiguration:
 
 
 @dataclass(frozen=True)
-class GlobalRuleConfiguration:
-    rules: tuple[SyncRule, ...] = DEFAULT_GLOBAL_RULES
+class CommonRuleConfiguration:
+    rules: tuple[SyncRule, ...] = DEFAULT_COMMON_RULES
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -475,48 +475,48 @@ class GlobalRuleConfiguration:
         patterns: tuple[str, ...],
         *,
         target: RuleTarget = "local",
-    ) -> tuple[GlobalRuleConfiguration, RuleUpdate]:
+    ) -> tuple[CommonRuleConfiguration, RuleUpdate]:
         rules, update = _append_rules(
             self.rules,
             action,
             patterns,
             target=target,
         )
-        return GlobalRuleConfiguration(rules), update
+        return CommonRuleConfiguration(rules), update
 
     def without_rule(
         self,
         rule_id: int,
-    ) -> tuple[GlobalRuleConfiguration, SyncRule]:
+    ) -> tuple[CommonRuleConfiguration, SyncRule]:
         rules, removed = _remove_rule(
             self.rules,
             rule_id,
-            scope="global synchronization policy",
+            scope="common synchronization policy",
         )
-        return GlobalRuleConfiguration(rules), removed
+        return CommonRuleConfiguration(rules), removed
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "version": GLOBAL_RULES_VERSION,
+            "version": COMMON_RULES_VERSION,
             "rules": [rule.to_dict() for rule in self.rules],
         }
 
     @classmethod
-    def from_dict(cls, value: Any) -> GlobalRuleConfiguration:
+    def from_dict(cls, value: Any) -> CommonRuleConfiguration:
         if not isinstance(value, dict):
-            raise ConfigurationError("global rules document must be an object")
-        if value.get("version") != GLOBAL_RULES_VERSION:
+            raise ConfigurationError("common rules document must be an object")
+        if value.get("version") != COMMON_RULES_VERSION:
             raise ConfigurationError(
-                "global rules version mismatch "
-                f"(found {value.get('version')!r}, expected {GLOBAL_RULES_VERSION})"
+                "common rules version mismatch "
+                f"(found {value.get('version')!r}, expected {COMMON_RULES_VERSION})"
             )
         if set(value) != {"version", "rules"}:
             raise ConfigurationError(
-                "global rules document has unknown or missing fields"
+                "common rules document has unknown or missing fields"
             )
         rules = value["rules"]
         if not isinstance(rules, list):
-            raise ConfigurationError("global rules must be an array")
+            raise ConfigurationError("common rules must be an array")
         try:
             decoded = tuple(SyncRule.from_dict(rule) for rule in rules)
         except RuleError as error:
@@ -549,13 +549,13 @@ class ConfigurationStore:
             ) from error
 
 
-class GlobalRuleStore:
+class CommonRuleStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or Path.home() / ".hlsync" / "rules.json"
 
-    def load(self) -> GlobalRuleConfiguration:
+    def load(self) -> CommonRuleConfiguration:
         if not self.path.exists():
-            configuration = GlobalRuleConfiguration()
+            configuration = CommonRuleConfiguration()
             self.save(configuration)
             return configuration
         try:
@@ -563,14 +563,14 @@ class GlobalRuleStore:
                 document = json.load(handle)
         except (OSError, json.JSONDecodeError) as error:
             raise ConfigurationError(
-                f"could not read global rules file {self.path}: {error}"
+                f"could not read common rules file {self.path}: {error}"
             ) from error
-        return GlobalRuleConfiguration.from_dict(document)
+        return CommonRuleConfiguration.from_dict(document)
 
-    def save(self, configuration: GlobalRuleConfiguration) -> None:
+    def save(self, configuration: CommonRuleConfiguration) -> None:
         try:
             write_json_atomic(self.path, configuration.to_dict())
         except OSError as error:
             raise ConfigurationError(
-                f"could not write global rules file {self.path}: {error}"
+                f"could not write common rules file {self.path}: {error}"
             ) from error

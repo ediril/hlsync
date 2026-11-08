@@ -6,7 +6,7 @@ import pytest
 
 from hlsync import __version__
 from hlsync.cli import _effective_rules, run
-from hlsync.config import DEFAULT_GLOBAL_RULES, ConfigurationStore, GlobalRuleStore
+from hlsync.config import DEFAULT_COMMON_RULES, ConfigurationStore, CommonRuleStore
 from hlsync.rules import RuleSet, SyncRule
 from hlsync.snapshot import TreeEntry, TreeSnapshot, snapshot_local
 from hlsync.transport import PathOperationError
@@ -142,8 +142,8 @@ def test_anywhere_rules_share_scoping_storage_and_overrides(tmp_path, monkeypatc
     assert not _effective_rules(store, store.load().profiles["prod"]).excludes(
         "sub/future/deep/one.txt"
     )
-    assert invoke(["exclude", "-g", "--any", "cache/"], store)[0] == 0
-    assert GlobalRuleStore(tmp_path / "rules.json").load().rules[-1].pattern == (
+    assert invoke(["exclude", "-c", "--any", "cache/"], store)[0] == 0
+    assert CommonRuleStore(tmp_path / "rules.json").load().rules[-1].pattern == (
         "**/cache/**"
     )
     assert invoke([
@@ -431,7 +431,7 @@ def test_add_prompts_for_another_local_root_when_current_is_declined(
     assert store.load().profiles["prod"].local_root == str(selected)
 
 
-def test_global_rules_seed_outside_profiles_and_allow_profile_overrides(
+def test_common_rules_seed_outside_profiles_and_allow_profile_overrides(
     tmp_path, monkeypatch
 ) -> None:
     store = ConfigurationStore(tmp_path / "configs.json")
@@ -455,27 +455,27 @@ def test_global_rules_seed_outside_profiles_and_allow_profile_overrides(
         ],
         store,
     )[0] == 0
-    global_path = tmp_path / "rules.json"
-    assert global_path.exists()
-    assert GlobalRuleStore(global_path).load().rules == DEFAULT_GLOBAL_RULES
-    assert '"next_rule_id"' not in global_path.read_text(encoding="utf-8")
+    common_path = tmp_path / "rules.json"
+    assert common_path.exists()
+    assert CommonRuleStore(common_path).load().rules == DEFAULT_COMMON_RULES
+    assert '"next_rule_id"' not in common_path.read_text(encoding="utf-8")
 
     monkeypatch.chdir(outside)
-    exclusion_id = max(rule.id for rule in DEFAULT_GLOBAL_RULES) + 1
+    exclusion_id = max(rule.id for rule in DEFAULT_COMMON_RULES) + 1
     inclusion_id = exclusion_id + 1
     assert invoke(
-        ["exclude", "-g", "--pattern", "*.tmp"], store
+        ["exclude", "-c", "--pattern", "*.tmp"], store
     ) == (
         0,
-        f"Recorded global exclusion rules:\n  g{exclusion_id}  exclude *.tmp\n",
+        f"Recorded common exclusion rules:\n  c{exclusion_id}  exclude *.tmp\n",
         "",
     )
     assert invoke(
-        ["include", "-g", "--pattern", "**/.DS_Store"], store
+        ["include", "-c", "--pattern", "**/.DS_Store"], store
     ) == (
         0,
-        "Recorded global inclusion rules:\n"
-        f"  g{inclusion_id}  include **/.DS_Store\n",
+        "Recorded common inclusion rules:\n"
+        f"  c{inclusion_id}  include **/.DS_Store\n",
         "",
     )
 
@@ -488,33 +488,33 @@ def test_global_rules_seed_outside_profiles_and_allow_profile_overrides(
     assert "x .DS_Store\n" not in included
     assert "x scratch.tmp\n" not in included
     combined = invoke(["rules"], store)[1]
-    assert combined.startswith("Rules for profile 'prod':\n")
-    combined_lines = [line.strip() for line in combined.splitlines()]
-    rule_index = combined_lines.index(f"g{exclusion_id}  exclude *.tmp")
-    assert combined_lines[rule_index + 1] == "1  include *.tmp"
+    common_section, profile_section, _ = combined.split("\n\n")
+    assert common_section.startswith("Common rules (all profiles):\n")
+    assert f"c{exclusion_id}  exclude *.tmp\n" in common_section
+    assert profile_section == "Profile rules ('prod' only):\n  ./\n      1  include *.tmp"
     assert combined.endswith(
-        "Profile rules override global rules; later matching rules win.\n"
+        "Profile rules override common rules; later matching rules win.\n"
     )
-    invalid_global_id = invoke(["rules", "-g", "rm", "8"], store)
-    assert invalid_global_id[0] == 1
-    assert "rule id must be g-prefixed (for example g3)" in invalid_global_id[2]
+    invalid_common_id = invoke(["rules", "-c", "rm", "8"], store)
+    assert invalid_common_id[0] == 1
+    assert "rule id must be c-prefixed (for example c3)" in invalid_common_id[2]
     monkeypatch.chdir(outside)
-    assert invoke(["rules", "rm", f"g{inclusion_id}"], store) == (
+    assert invoke(["rules", "rm", f"c{inclusion_id}"], store) == (
         0,
-        f"Removed global rule g{inclusion_id}: include **/.DS_Store\n",
+        f"Removed common rule c{inclusion_id}: include **/.DS_Store\n",
         "",
     )
     monkeypatch.chdir(workspace)
     assert "x .DS_Store\n" not in invoke(["list"], store)[1]
     assert not any(
         rule.pattern == "**/.DS_Store"
-        for rule in GlobalRuleStore(global_path).load().rules
+        for rule in CommonRuleStore(common_path).load().rules
     )
     assert invoke(
-        ["exclude", "-g", "--pattern", "*.bak"], store
+        ["exclude", "-c", "--pattern", "*.bak"], store
     ) == (
         0,
-        f"Recorded global exclusion rules:\n  g{inclusion_id}  exclude *.bak\n",
+        f"Recorded common exclusion rules:\n  c{inclusion_id}  exclude *.bak\n",
         "",
     )
 
@@ -729,7 +729,7 @@ def test_ordered_exclusion_commands_persist_reinclusion(
     assert rules_view[1].index(".git/\n") < rules_view[1].index("docs/\n")
     assert "     2  exclude all contents\n     7  include keep.js\n" in rules_view[1]
     assert rules_view[1].endswith(
-        "Profile rules override global rules; later matching rules win.\n"
+        "Profile rules override common rules; later matching rules win.\n"
     )
     list_stdout = invoke(["profiles"], store)[1]
     assert "* prod\n" in list_stdout
@@ -808,7 +808,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
         ["exclude", "--pattern", "node_modules/,**/*.log"], store
     )[0] == 0
     expected_rules = RuleSet.layered(
-        DEFAULT_GLOBAL_RULES,
+        DEFAULT_COMMON_RULES,
         store.load().profiles["prod"].rules,
     ).rules
 
@@ -1556,7 +1556,7 @@ def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> 
         SyncRule(1, "exclude", "future-dir", "remote"),
     )
     rules_view = invoke(["rules"], store)[1]
-    assert "  Remote:\n    ./\n       1  exclude future-dir\n" in rules_view
+    assert "  Remote paths:\n    ./\n       1  exclude future-dir\n" in rules_view
 
     listed = []
     operations = []
