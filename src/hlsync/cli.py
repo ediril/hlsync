@@ -210,7 +210,7 @@ def _add_recursive_depth_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-DEFAULT_UPLOAD_JOBS = 3
+DEFAULT_UPLOAD_JOBS = 4
 MAX_UPLOAD_JOBS = 10
 
 
@@ -224,30 +224,32 @@ def _upload_job_count(value: str) -> int:
 
 def _open_upload_sessions(
     profile: ProfileConfiguration,
-    count: int,
+    jobs: int,
+    files: int,
     sessions: ExitStack,
     progress: TextIO,
 ) -> tuple[ExplicitFTPSTransport, ...]:
+    wanted = min(jobs, files)
     opened: list[ExplicitFTPSTransport] = []
     refusal: TransportError | None = None
-    for _ in range(count):
+    for _ in range(wanted - 1):
         try:
             opened.append(sessions.enter_context(ExplicitFTPSTransport(profile)))
         except TransportError as error:
             refusal = error
             break
     connections = len(opened) + 1
+    noun = "connection" if connections == 1 else "connections"
     if refusal is not None:
-        print(
-            f"Using {connections} of {count + 1} connections; "
-            f"the server refused more: {refusal}",
-            file=progress,
-            flush=True,
+        message = (
+            f"Using {connections} of {wanted} connections; "
+            f"the server refused more: {refusal}"
         )
-    elif connections > 1:
-        print(
-            f"Using {connections} connections.", file=progress, flush=True
-        )
+    elif wanted < jobs:
+        message = f"Using {connections} {noun}, one per file."
+    else:
+        message = f"Using {connections} {noun}."
+    print(message, file=progress, flush=True)
     return tuple(opened)
 
 
@@ -2690,6 +2692,7 @@ def _format_transfer(
     result: TransferResult,
     *,
     dry_run: bool = False,
+    connections: int = 0,
 ) -> str:
     direction = result.plan.direction.capitalize()
     if not result.succeeded:
@@ -2708,10 +2711,15 @@ def _format_transfer(
         lines = [f"{nothing}."]
     else:
         changes = f"{count} change{'s' if count != 1 else ''}"
+        over = (
+            f" over {connections} connection{'s' if connections != 1 else ''}"
+            if connections
+            else ""
+        )
         lines = (
             [f"Dry push: {count} planned change{'s' if count != 1 else ''}."]
             if dry_run
-            else [f"{direction} complete: {changes}."]
+            else [f"{direction} complete: {changes}{over}."]
         )
     if result.plan.direction == "pull":
         skipped = [entry for entry in result.plan.entries if entry.action == "skip"]
@@ -2867,7 +2875,7 @@ def _transfer(
         feedback = _UploadProgress(progress, uploads, dry_run=dry_run)
         upload_sessions = (
             _open_upload_sessions(
-                profile, min(arguments.jobs, len(uploads)) - 1, sessions, progress
+                profile, arguments.jobs, len(uploads), sessions, progress
             )
             if uploads and not dry_run
             else ()
@@ -2906,7 +2914,12 @@ def _transfer(
         finally:
             feedback.finish()
     return (
-        _format_transfer(name, result, dry_run=dry_run),
+        _format_transfer(
+            name,
+            result,
+            dry_run=dry_run,
+            connections=len(upload_sessions) + 1 if uploads and not dry_run else 0,
+        ),
         result.succeeded,
     )
 

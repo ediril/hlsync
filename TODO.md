@@ -222,7 +222,7 @@
   - Add a way to omit excluded-file diagnostics when their remote traversal cost
     is unwanted.
   - [x] Upload concurrently over independent FTPS sessions with `push -j N`
-    (default 3, at most 10), continuing with the sessions a shared host accepts,
+    (default 4, at most 10), continuing with the sessions a shared host accepts,
     reporting outcomes in plan order, and keeping creation and deletion on the
     scanning session.
   - Persist a per-profile connection limit. This needs a new profile

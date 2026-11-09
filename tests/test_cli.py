@@ -1329,7 +1329,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
         "  + src/.env.example\n"
         "  + src/main.py\n"
     )
-    assert push_result[1] == "Push complete: 3 changes.\n"
+    assert push_result[1] == "Push complete: 3 changes over 2 connections.\n"
     assert operations[0] == ("mkdir", "src")
     assert sorted(operations[1:]) == [
         ("upload", "src/.env.example", b"KEY=value", 9, False),

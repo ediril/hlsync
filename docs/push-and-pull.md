@@ -75,7 +75,7 @@ counts advance only after timestamp verification and installation; failures
 remain visible immediately. Redirected output keeps ordinary per-file logs.
 Dry runs show planned totals without simulating byte progress.
 
-Push uploads up to three files at once, each over its own FTPS connection.
+Push uploads up to four files at once, each over its own FTPS connection.
 Use `-j` / `--jobs` to choose from 1 to 10 connections; `-j 1` uploads one file
 at a time:
 
@@ -86,7 +86,9 @@ hlsync push -j 1
 
 Shared hosts often limit connections per account. When the server refuses an
 extra connection, push uses the connections it already has and reports, for
-example, `Using 2 of 3 connections; the server refused more`. Folder creation
+example, `Using 2 of 4 connections; the server refused more`. Push never opens
+more connections than it has files to upload, and the final summary repeats
+the count, as in `Push complete: 612 changes over 4 connections.` Folder creation
 and deletions still run on one connection, and deletions start only after every
 upload succeeds. Each file is printed as soon as it is installed, so with
 several connections the order can differ between runs. Dry runs open no extra

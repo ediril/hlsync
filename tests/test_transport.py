@@ -884,15 +884,14 @@ def test_push_uploads_over_parallel_sessions_and_reports_each_file(
     monkeypatch.setattr(ExplicitFTPSTransport, "upload_file", upload_file)
 
     def push(*options):
-        progress = io.StringIO()
-        status = run(
-            ["push", *options], store=store, stdout=io.StringIO(), stderr=progress
-        )
+        progress, summary = io.StringIO(), io.StringIO()
+        status = run(["push", *options], store=store, stdout=summary, stderr=progress)
         assert status == 0, progress.getvalue()
-        return progress.getvalue()
+        return progress.getvalue(), summary.getvalue()
 
-    progress = push("-j", "3")
+    progress, summary = push("-j", "3")
     assert "Using 3 connections.\n" in progress
+    assert summary == "Push complete: 6 changes over 3 connections.\n"
     assert most_in_flight == 3
     reported = progress.split("Pushing changes...\n", 1)[1].splitlines()
     assert sorted(reported) == [f"  + {name}" for name in names]
@@ -902,8 +901,9 @@ def test_push_uploads_over_parallel_sessions_and_reports_each_file(
         (local_root / name).write_text(f"{name} changed")
         os.utime(local_root / name, (2_000_000_000, 2_000_000_000))
     server.max_cons_per_ip = 2
-    progress = push("-j", "3")
+    progress, summary = push("-j", "3")
     assert "Using 2 of 3 connections; the server refused more" in progress
+    assert summary == "Push complete: 6 changes over 2 connections.\n"
     assert all(
         (remote_root / name).read_text() == f"{name} changed" for name in names
     )
