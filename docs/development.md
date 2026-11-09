@@ -27,8 +27,11 @@ differences.
 To switch back to the published release from PyPI:
 
 ```console
-uv tool install --force hlsync
+uv tool install --force --refresh hlsync
 ```
+
+`--refresh` makes uv check PyPI again instead of reusing its cached package
+index. Without it, uv may reinstall an older release right after you publish.
 
 ## Project layout
 
