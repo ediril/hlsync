@@ -7,6 +7,7 @@ import shutil
 import sys
 import time
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TextIO, TypeVar
@@ -207,6 +208,47 @@ def _add_recursive_depth_arguments(parser: argparse.ArgumentParser) -> None:
         "-s", "--shallow", action="store_true",
         help="process immediate contents without entering child directories",
     )
+
+
+DEFAULT_UPLOAD_JOBS = 3
+MAX_UPLOAD_JOBS = 10
+
+
+def _upload_job_count(value: str) -> int:
+    if not value.isdigit() or not 1 <= int(value) <= MAX_UPLOAD_JOBS:
+        raise argparse.ArgumentTypeError(
+            f"must be a whole number from 1 to {MAX_UPLOAD_JOBS}"
+        )
+    return int(value)
+
+
+def _open_upload_sessions(
+    profile: ProfileConfiguration,
+    count: int,
+    sessions: ExitStack,
+    progress: TextIO,
+) -> tuple[ExplicitFTPSTransport, ...]:
+    opened: list[ExplicitFTPSTransport] = []
+    refusal: TransportError | None = None
+    for _ in range(count):
+        try:
+            opened.append(sessions.enter_context(ExplicitFTPSTransport(profile)))
+        except TransportError as error:
+            refusal = error
+            break
+    connections = len(opened) + 1
+    if refusal is not None:
+        print(
+            f"Using {connections} of {count + 1} connections; "
+            f"the server refused more: {refusal}",
+            file=progress,
+            flush=True,
+        )
+    elif connections > 1:
+        print(
+            f"Using {connections} connections.", file=progress, flush=True
+        )
+    return tuple(opened)
 
 
 def _add_include_excluded_argument(parser: argparse.ArgumentParser) -> None:
@@ -687,7 +729,7 @@ def build_parser() -> argparse.ArgumentParser:
                     if command == "pull"
                     else "hlsync [PROFILE] push [PATH ...] [-r | -s] [-I]"
                 )
-                + (" [-p] [--force] [--dry]" if command == "push" else "")
+                + (" [-p] [--force] [--dry] [-j N]" if command == "push" else "")
             ),
         )
         _add_include_excluded_argument(transfer_parser)
@@ -713,6 +755,17 @@ def build_parser() -> argparse.ArgumentParser:
                 "--dry",
                 action="store_true",
                 help="show the exact push without changing either side",
+            )
+            transfer_parser.add_argument(
+                "-j",
+                "--jobs",
+                type=_upload_job_count,
+                default=DEFAULT_UPLOAD_JOBS,
+                metavar="N",
+                help=(
+                    "upload N files at once over separate connections "
+                    f"(1-{MAX_UPLOAD_JOBS}, default {DEFAULT_UPLOAD_JOBS})"
+                ),
             )
         else:
             transfer_parser.add_argument(
@@ -2640,12 +2693,11 @@ def _format_transfer(
 ) -> str:
     direction = result.plan.direction.capitalize()
     if not result.succeeded:
-        lines = [
-            f"{direction} finished with errors for profile '{name}': "
+        return (
+            f"{direction} stopped after a failure for profile '{name}': "
             f"{result.changed_count} completed, {result.failed_count} failed, "
-            f"{result.skipped_count} skipped."
-        ]
-        return "\n".join(lines)
+            f"{result.not_started_count} not started."
+        )
     count = result.changed_count
     if count == 0:
         nothing = f"  Nothing to {result.plan.direction}"
@@ -2674,10 +2726,9 @@ def _report_transfer_operation(
     progress: TextIO,
 ) -> None:
     if isinstance(operation, TransferIssue):
-        line = f"{operation.status:<7} {operation.path}: {operation.reason}"
+        line = f"failed  {operation.path}: {operation.reason}"
         if _use_color(progress):
-            color = "\033[31m" if operation.status == "failed" else "\033[33m"
-            line = f"{color}{line}{_RESET}"
+            line = f"\033[31m{line}{_RESET}"
         print(f"  {line}", file=progress, flush=True)
         return
     marker = _TRANSFER_MARKERS[operation.action]
@@ -2750,7 +2801,7 @@ class _UploadProgress:
             f"{_byte_label(self.sent)}/{_byte_label(self.total_bytes)} sent"
         )
         if self.issues:
-            line += f" · {self.issues} failed/skipped"
+            line += f" · {self.issues} failed"
         width = max(1, shutil.get_terminal_size().columns - 1)
         print(f"\r\033[2K{line[:width]}", end="", file=self.output, flush=True)
         self.visible = True
@@ -2792,7 +2843,7 @@ def _transfer(
     if options is not None:
         print(options, file=progress, flush=True)
     print("Connecting securely over FTPS...", file=progress, flush=True)
-    with ExplicitFTPSTransport(profile) as transport:
+    with ExplicitFTPSTransport(profile) as transport, ExitStack() as sessions:
         local, remote, plan = _build_plan(
             arguments,
             root,
@@ -2814,6 +2865,13 @@ def _transfer(
             if entry.path in upload_paths
         } if arguments.command == "push" else {}
         feedback = _UploadProgress(progress, uploads, dry_run=dry_run)
+        upload_sessions = (
+            _open_upload_sessions(
+                profile, min(arguments.jobs, len(uploads)) - 1, sessions, progress
+            )
+            if uploads and not dry_run
+            else ()
+        )
         executable_actions = {
             "create-remote",
             "upload",
@@ -2843,6 +2901,7 @@ def _transfer(
                 progress=feedback.report,
                 dry_run=dry_run,
                 byte_progress=feedback.advance if uploads and not dry_run else None,
+                upload_sessions=upload_sessions,
             )
         finally:
             feedback.finish()

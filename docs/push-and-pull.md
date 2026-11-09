@@ -58,8 +58,8 @@ directories are never entered. Dry-run plans use diff's compact colored `+`,
 `~`, and `-` action markers under an explicit dry-push heading.
 
 Live transfers print the colored `+`, `~`, or `-` action and path after each
-operation succeeds. Failures and skips appear immediately; the final summary
-contains counts without repeating errors. Dry runs use the same feedback to
+operation succeeds. A failure appears immediately; the final summary contains
+counts without repeating errors. Dry runs use the same feedback to
 show planned operations without performing them.
 When no operation is needed, HLSync prints `Nothing to push` or `Nothing to
 pull` without announcing an empty transfer phase. An empty push also reports
@@ -75,6 +75,23 @@ counts advance only after timestamp verification and installation; failures
 remain visible immediately. Redirected output keeps ordinary per-file logs.
 Dry runs show planned totals without simulating byte progress.
 
+Push uploads up to three files at once, each over its own FTPS connection.
+Use `-j` / `--jobs` to choose from 1 to 10 connections; `-j 1` uploads one file
+at a time:
+
+```console
+hlsync push -j 6
+hlsync push -j 1
+```
+
+Shared hosts often limit connections per account. When the server refuses an
+extra connection, push uses the connections it already has and reports, for
+example, `Using 2 of 3 connections; the server refused more`. Folder creation
+and deletions still run on one connection, and deletions start only after every
+upload succeeds. Each file is printed as soon as it is installed, so with
+several connections the order can differ between runs. Dry runs open no extra
+connections.
+
 Delete selected remote-only paths explicitly with:
 
 ```console
@@ -82,9 +99,8 @@ hlsync push --prune
 hlsync push -p 'generated/*.html'
 ```
 
-Deletion is limited to the selected scope, runs only after every upload
-succeeds, and is suppressed after any upload failure. Pull never deletes remote
-paths.
+Deletion is limited to the selected scope and runs only after every upload
+succeeds. Pull never deletes remote paths.
 
 ## Safe file replacement
 
@@ -120,8 +136,10 @@ missing. This cleanup is independent of remote-only deletion policy and does
 not affect ordinary remote-only files. Concurrent pushes to one profile are not
 supported.
 
-A path-scoped permission failure skips that path or unwritable subtree while
-independent paths continue. The command exits nonzero and suppresses all
-pruning. Type or symlink conflicts, connection failures, and failed replacement
-recovery on selected paths stop the operation when continued state cannot be
-trusted.
+Push stops at the first failure, with one connection or several: a folder that
+cannot be created, a file that cannot be uploaded or read, or a lost
+connection. No new uploads start, uploads already in progress on other
+connections finish their staged installation, and deletions do not run. The
+summary counts what completed, what failed, and what was not started, for
+example `Push stopped after a failure for profile 'prod': 41 completed, 1
+failed, 558 not started.`, and the command exits nonzero.

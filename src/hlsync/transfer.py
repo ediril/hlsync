@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import os
+import queue
 import stat
 import tempfile
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from hlsync.comparison import ComparisonEntry, ComparisonPlan
 from hlsync.snapshot import EntryKind, TreeEntry, TreeSnapshot
-from hlsync.transport import PathOperationError, RemoteTransport
+from hlsync.transport import PathOperationError, RemoteTransport, TransportError
 
 
 class TransferError(RuntimeError):
@@ -20,7 +22,6 @@ class TransferError(RuntimeError):
 @dataclass(frozen=True)
 class TransferIssue:
     path: str
-    status: str
     reason: str
 
 
@@ -49,6 +50,7 @@ class TransferResult:
     plan: ComparisonPlan
     completed_paths: frozenset[str]
     issues: tuple[TransferIssue, ...] = ()
+    not_started_count: int = 0
 
     @property
     def changed_count(self) -> int:
@@ -63,11 +65,7 @@ class TransferResult:
 
     @property
     def failed_count(self) -> int:
-        return sum(issue.status == "failed" for issue in self.issues)
-
-    @property
-    def skipped_count(self) -> int:
-        return sum(issue.status == "skipped" for issue in self.issues)
+        return len(self.issues)
 
     @property
     def succeeded(self) -> bool:
@@ -190,73 +188,47 @@ def _push_files(
     operations: tuple[TransferOperation, ...],
     dry_run: bool,
     byte_progress: Callable[[int], None] | None,
-) -> tuple[set[str], list[TransferIssue]]:
+    upload_sessions: Sequence[RemoteTransport],
+) -> tuple[set[str], list[TransferIssue], int]:
+    """Create folders, upload files, then delete, stopping at the first failure.
+
+    Returns the completed paths, the failure if one occurred, and how many
+    planned operations were not started because of it.
+    """
     local_entries = _entry_map(local)
     completed: set[str] = set()
     issues: list[TransferIssue] = []
-    unavailable_directories: set[str] = set()
+    started = 0
     planned_creations = {
         entry.path
         for entry in plan.entries
         if entry.action == "create-remote"
     }
+    display = threading.Lock()
 
-    def unavailable_parent(path: str) -> str | None:
-        candidate = PurePosixPath(path)
-        return next(
-            (
-                directory
-                for directory in sorted(unavailable_directories)
-                if PurePosixPath(directory) == candidate
-                or PurePosixPath(directory) in candidate.parents
-            ),
-            None,
-        )
+    def fail(issue: TransferIssue) -> tuple[set[str], list[TransferIssue], int]:
+        _record_issue(issues, issue, progress)
+        return completed, issues, len(operations) - started
 
     for operation in (item for item in operations if item.action == "create"):
-        directory = operation.path
-        blocked_by = unavailable_parent(directory)
-        if blocked_by is not None:
-            unavailable_directories.add(directory)
-            if directory in planned_creations:
-                _record_issue(
-                    issues,
-                    TransferIssue(
-                        directory,
-                        "skipped",
-                        f"parent directory '{blocked_by}' could not be created",
-                    ),
-                    progress,
-                )
-            continue
+        started += 1
         try:
             if not dry_run:
-                transport.make_directory(directory)
+                transport.make_directory(operation.path)
         except PathOperationError as error:
-            unavailable_directories.add(directory)
-            _record_issue(
-                issues, TransferIssue(directory, "failed", str(error)), progress
-            )
-            continue
+            return fail(TransferIssue(operation.path, str(error)))
         if progress is not None:
             progress(operation)
-        if directory in planned_creations:
-            completed.add(directory)
-    for operation in (
-        item for item in operations if item.action in {"add", "update"}
-    ):
-        blocked_by = unavailable_parent(operation.path)
-        if blocked_by is not None:
-            _record_issue(
-                issues,
-                TransferIssue(
-                    operation.path,
-                    "skipped",
-                    f"parent directory '{blocked_by}' is unavailable",
-                ),
-                progress,
-            )
-            continue
+        if operation.path in planned_creations:
+            completed.add(operation.path)
+
+    def sent(byte_count: int) -> None:
+        with display:
+            byte_progress(byte_count)
+
+    def upload(
+        operation: TransferOperation, session: RemoteTransport
+    ) -> TransferIssue | None:
         metadata = local_entries[operation.path]
         if metadata.size is None or metadata.modified_ns is None:
             raise TransferError(
@@ -266,34 +238,118 @@ def _push_files(
         try:
             if not dry_run:
                 with path.open("rb") as source:
-                    transport.upload_file(
+                    session.upload_file(
                         source,
                         operation.path,
                         size=metadata.size,
                         modified_ns=metadata.modified_ns,
                         replace=operation.action == "update",
-                        byte_progress=byte_progress,
+                        byte_progress=sent if byte_progress is not None else None,
                     )
-        except PathOperationError as error:
-            _record_issue(
-                issues, TransferIssue(operation.path, "failed", str(error)), progress
-            )
-            continue
+        except TransportError as error:
+            return TransferIssue(operation.path, str(error))
         except OSError as error:
-            _record_issue(
-                issues,
-                TransferIssue(
-                    operation.path,
-                    "failed",
-                    f"could not read local file '{path}': {error}",
-                ),
-                progress,
+            return TransferIssue(
+                operation.path, f"could not read local file '{path}': {error}"
             )
-            continue
+        return None
+
+    uploads = tuple(item for item in operations if item.action in {"add", "update"})
+    for operation, issue in _run_uploads(
+        uploads, (transport, *upload_sessions), upload
+    ):
+        started += 1
+        with display:
+            if issue is not None:
+                _record_issue(issues, issue, progress)
+                continue
+            completed.add(operation.path)
+            if progress is not None:
+                progress(operation)
+    if issues:
+        return completed, issues, len(operations) - started
+
+    for operation in (item for item in operations if item.action == "delete"):
+        started += 1
+        try:
+            if not dry_run:
+                transport.delete_path(
+                    operation.path,
+                    is_directory=operation.kind == "directory",
+                )
+        except PathOperationError as error:
+            return fail(TransferIssue(operation.path, str(error)))
         completed.add(operation.path)
         if progress is not None:
             progress(operation)
-    return completed, issues
+    return completed, issues, 0
+
+
+def _run_uploads(
+    uploads: tuple[TransferOperation, ...],
+    sessions: tuple[RemoteTransport, ...],
+    upload: Callable[[TransferOperation, RemoteTransport], TransferIssue | None],
+):
+    """Upload over every session at once and yield each outcome as it finishes.
+
+    All files wait in one queue, and each worker session takes the next file as
+    soon as it is free; the queue hands every file to exactly one worker. The
+    first failure stops new uploads; uploads already running on other sessions
+    finish and are yielded. An unexpected error is raised once every session
+    has stopped.
+    """
+    pending: queue.SimpleQueue[TransferOperation] = queue.SimpleQueue()
+    for operation in uploads:
+        pending.put(operation)
+    finished: queue.SimpleQueue[
+        tuple[TransferOperation, TransferIssue | None | BaseException] | None
+    ] = queue.SimpleQueue()
+    stop = threading.Event()
+
+    def work(session: RemoteTransport) -> None:
+        try:
+            while not stop.is_set():
+                try:
+                    operation = pending.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    outcome = upload(operation, session)
+                except BaseException as error:
+                    stop.set()
+                    finished.put((operation, error))
+                    return
+                if outcome is not None:
+                    stop.set()
+                finished.put((operation, outcome))
+        finally:
+            finished.put(None)
+
+    workers = [
+        threading.Thread(target=work, args=(session,), daemon=True)
+        for session in sessions[: len(uploads)]
+    ]
+    for worker in workers:
+        worker.start()
+    error: BaseException | None = None
+    try:
+        remaining = len(workers)
+        while remaining:
+            item = finished.get()
+            if item is None:
+                remaining -= 1
+                continue
+            operation, outcome = item
+            if isinstance(outcome, BaseException):
+                error = error or outcome
+                continue
+            yield operation, outcome
+    finally:
+        stop.set()
+        for worker in workers:
+            worker.join()
+    if error is not None:
+        raise error
 
 
 def _replace_local_file(
@@ -378,32 +434,6 @@ def _pull_files(
     return completed
 
 
-def _delete_remote(
-    transport: RemoteTransport,
-    progress: TransferProgress | None,
-    operations: tuple[TransferOperation, ...],
-    dry_run: bool,
-) -> tuple[set[str], list[TransferIssue]]:
-    completed: set[str] = set()
-    issues: list[TransferIssue] = []
-    for operation in (item for item in operations if item.action == "delete"):
-        try:
-            if not dry_run:
-                transport.delete_path(
-                    operation.path,
-                    is_directory=operation.kind == "directory",
-                )
-        except PathOperationError as error:
-            _record_issue(
-                issues, TransferIssue(operation.path, "failed", str(error)), progress
-            )
-            continue
-        completed.add(operation.path)
-        if progress is not None:
-            progress(operation)
-    return completed, issues
-
-
 def execute_transfer(
     plan: ComparisonPlan,
     *,
@@ -414,52 +444,26 @@ def execute_transfer(
     progress: TransferProgress | None = None,
     dry_run: bool = False,
     byte_progress: Callable[[int], None] | None = None,
+    upload_sessions: Sequence[RemoteTransport] = (),
 ) -> TransferResult:
     if dry_run and plan.direction != "push":
         raise TransferError("dry run is supported only for push")
     _preflight(plan, local_root, local)
     operations = planned_transfer_operations(plan, remote)
-    if plan.direction == "push":
-        completed, issues = _push_files(
-            plan,
-            local_root,
-            local,
-            transport,
-            progress,
-            operations,
-            dry_run,
-            byte_progress,
-        )
-    else:
+    if plan.direction == "pull":
         completed = _pull_files(
-            plan,
-            local_root,
-            local,
-            remote,
-            transport,
-            progress,
-            operations,
+            plan, local_root, local, remote, transport, progress, operations
         )
-        issues = []
-    if issues:
-        for entry in plan.entries:
-            if entry.action == "delete-remote":
-                _record_issue(
-                    issues,
-                    TransferIssue(
-                        entry.path,
-                        "skipped",
-                        "remote pruning was suppressed after another transfer failed",
-                    ),
-                    progress,
-                )
-    else:
-        deleted, deletion_issues = _delete_remote(
-            transport,
-            progress,
-            operations,
-            dry_run,
-        )
-        completed.update(deleted)
-        issues.extend(deletion_issues)
-    return TransferResult(plan, frozenset(completed), tuple(issues))
+        return TransferResult(plan, frozenset(completed))
+    completed, issues, not_started = _push_files(
+        plan,
+        local_root,
+        local,
+        transport,
+        progress,
+        operations,
+        dry_run,
+        byte_progress,
+        upload_sessions,
+    )
+    return TransferResult(plan, frozenset(completed), tuple(issues), not_started)

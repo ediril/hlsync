@@ -5,6 +5,7 @@ import os
 import ssl
 import subprocess
 import threading
+import time
 
 import pytest
 from pyftpdlib.authorizers import DummyAuthorizer
@@ -47,7 +48,7 @@ def test_missing_credentials_are_reported(monkeypatch) -> None:
 
 
 @pytest.fixture
-def tls_ftp_server(tmp_path):
+def tls_ftp_service(tmp_path):
     certificate = tmp_path / "certificate.pem"
     private_key = tmp_path / "private-key.pem"
     subprocess.run(
@@ -100,11 +101,16 @@ def tls_ftp_server(tmp_path):
     )
     thread.start()
     try:
-        yield server.socket.getsockname()[1], certificate, root
+        yield server.socket.getsockname()[1], certificate, root, server
     finally:
         server.ioloop.call_later(0, server.close_all)
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+
+@pytest.fixture
+def tls_ftp_server(tls_ftp_service):
+    return tls_ftp_service[:3]
 
 
 def test_connects_with_verified_explicit_tls_and_protected_data_channel(
@@ -708,80 +714,6 @@ def test_gitignore_pruning_and_override_over_ftps(
         assert not (remote_root / ".gitignore").exists()
 
 
-def test_push_skips_an_unwritable_subtree_and_continues_independent_files(
-    tmp_path,
-) -> None:
-    local_root = tmp_path / "local"
-    blocked = local_root / "blocked"
-    blocked.mkdir(parents=True)
-    (blocked / "child.txt").write_text("blocked", encoding="utf-8")
-    (local_root / "good.txt").write_text("good", encoding="utf-8")
-    local = snapshot_local(local_root, RuleSet())
-    remote = TreeSnapshot(
-        (
-            TreeEntry(
-                "orphan.txt",
-                "file",
-                size=6,
-                modified_ns=1_700_000_000_000_000_000,
-                timestamp_precision_ns=1_000_000_000,
-            ),
-        )
-    )
-    plan = build_comparison(local, remote, prune_remote=True)
-    uploads = []
-    deletions = []
-    events = []
-
-    def report(event):
-        if isinstance(event, TransferOperation):
-            assert (event.path, b"good") in uploads
-        events.append(event)
-
-    class PartiallyWritableTransport:
-        def make_directory(self, path):
-            if path == "blocked":
-                raise PathOperationError("550 Permission denied")
-
-        def upload_file(
-            self,
-            source,
-            path,
-            *,
-            size,
-            modified_ns,
-            replace,
-            byte_progress=None,
-        ):
-            assert [(event.status, event.path) for event in events] == [
-                ("failed", "blocked"), ("skipped", "blocked/child.txt")
-            ]
-            uploads.append((path, source.read()))
-
-        def delete_path(self, path, *, is_directory):
-            deletions.append(path)
-
-    result = execute_transfer(
-        plan,
-        local_root=local_root,
-        local=local,
-        remote=remote,
-        transport=PartiallyWritableTransport(),
-        progress=report,
-    )
-
-    assert uploads == [("good.txt", b"good")]
-    assert deletions == []
-    assert result.changed_count == 1
-    assert isinstance(events[-1], TransferIssue)
-    assert events[-1].path == "orphan.txt"
-    assert [(issue.status, issue.path) for issue in result.issues] == [
-        ("failed", "blocked"),
-        ("skipped", "blocked/child.txt"),
-        ("skipped", "orphan.txt"),
-    ]
-
-
 def test_cli_push_refuses_to_overwrite_a_newer_remote_file_without_force(
     tls_ftp_server, tmp_path, monkeypatch
 ):
@@ -907,3 +839,151 @@ def test_push_of_a_subfolder_keeps_existing_remote_ancestors(
     assert (remote_root / "gallery/templates/partials/head.php").read_text() == "head"
     push("fresh/nested")
     assert (remote_root / "fresh/nested/new.txt").read_text() == "new"
+
+
+def test_push_uploads_over_parallel_sessions_and_reports_each_file(
+    tls_ftp_service, tmp_path, monkeypatch
+):
+    port, certificate, remote_root, server = tls_ftp_service
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    names = [f"file{index}.txt" for index in range(6)]
+    for name in names:
+        (local_root / name).write_text(name)
+    monkeypatch.chdir(local_root)
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    store = ConfigurationStore(tmp_path / "configs.json")
+    store.save(ApplicationConfiguration(profiles={
+        "prod": ProfileConfiguration(
+            host="localhost", port=port, remote_root="/", local_root=str(local_root),
+        ),
+    }))
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    monkeypatch.setattr(
+        "hlsync.cli.ExplicitFTPSTransport",
+        lambda profile: ExplicitFTPSTransport(profile, ssl_context=context),
+    )
+    in_flight = 0
+    most_in_flight = 0
+    counter = threading.Lock()
+    original_upload = ExplicitFTPSTransport.upload_file
+
+    def upload_file(transport, *arguments, **options):
+        nonlocal in_flight, most_in_flight
+        with counter:
+            in_flight += 1
+            most_in_flight = max(most_in_flight, in_flight)
+        try:
+            time.sleep(0.05)
+            return original_upload(transport, *arguments, **options)
+        finally:
+            with counter:
+                in_flight -= 1
+
+    monkeypatch.setattr(ExplicitFTPSTransport, "upload_file", upload_file)
+
+    def push(*options):
+        progress = io.StringIO()
+        status = run(
+            ["push", *options], store=store, stdout=io.StringIO(), stderr=progress
+        )
+        assert status == 0, progress.getvalue()
+        return progress.getvalue()
+
+    progress = push("-j", "3")
+    assert "Using 3 connections.\n" in progress
+    assert most_in_flight == 3
+    reported = progress.split("Pushing changes...\n", 1)[1].splitlines()
+    assert sorted(reported) == [f"  + {name}" for name in names]
+    assert sorted(path.name for path in remote_root.iterdir()) == names
+
+    for name in names:
+        (local_root / name).write_text(f"{name} changed")
+        os.utime(local_root / name, (2_000_000_000, 2_000_000_000))
+    server.max_cons_per_ip = 2
+    progress = push("-j", "3")
+    assert "Using 2 of 3 connections; the server refused more" in progress
+    assert all(
+        (remote_root / name).read_text() == f"{name} changed" for name in names
+    )
+
+
+def test_a_failed_upload_stops_the_push_without_losing_installed_files(
+    tmp_path,
+) -> None:
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    for index in range(8):
+        (local_root / f"file{index}.txt").write_text("data", encoding="utf-8")
+    local = snapshot_local(local_root, RuleSet())
+    remote = TreeSnapshot(
+        (
+            TreeEntry(
+                "orphan.txt",
+                "file",
+                size=6,
+                modified_ns=1_700_000_000_000_000_000,
+                timestamp_precision_ns=1_000_000_000,
+            ),
+        )
+    )
+    plan = build_comparison(local, remote, prune_remote=True)
+    installed = []
+    reported = []
+    deletions = []
+
+    class WorkingSession:
+        def upload_file(self, source, path, **_):
+            time.sleep(0.01)
+            installed.append(path)
+
+        def delete_path(self, path, *, is_directory):
+            deletions.append(path)
+
+    class BrokenSession(WorkingSession):
+        def upload_file(self, source, path, **_):
+            time.sleep(0.035)
+            raise TransportError(f"connection lost while uploading '{path}'")
+
+    def report(event):
+        if not isinstance(event, TransferIssue):
+            reported.append(event.path)
+
+    result = execute_transfer(
+        plan,
+        local_root=local_root,
+        local=local,
+        remote=remote,
+        transport=WorkingSession(),
+        upload_sessions=(BrokenSession(),),
+        progress=report,
+    )
+
+    assert [issue.reason for issue in result.issues] == [
+        f"connection lost while uploading '{result.issues[0].path}'"
+    ]
+    assert sorted(reported) == sorted(installed) == sorted(result.completed_paths)
+    assert len(installed) < 8
+    assert result.not_started_count == 9 - len(installed) - 1
+    assert deletions == []
+
+    installed.clear()
+
+    class FailsOnSecondFile(WorkingSession):
+        def upload_file(self, source, path, **options):
+            if path == "file1.txt":
+                raise PathOperationError("550 Permission denied")
+            super().upload_file(source, path, **options)
+
+    result = execute_transfer(
+        plan,
+        local_root=local_root,
+        local=local,
+        remote=remote,
+        transport=FailsOnSecondFile(),
+    )
+    assert installed == ["file0.txt"]
+    assert [issue.path for issue in result.issues] == ["file1.txt"]
+    assert result.not_started_count == 7
+    assert deletions == []

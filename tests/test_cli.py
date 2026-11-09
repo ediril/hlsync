@@ -1330,8 +1330,8 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
         "  + src/main.py\n"
     )
     assert push_result[1] == "Push complete: 3 changes.\n"
-    assert operations == [
-        ("mkdir", "src"),
+    assert operations[0] == ("mkdir", "src")
+    assert sorted(operations[1:]) == [
         ("upload", "src/.env.example", b"KEY=value", 9, False),
         ("upload", "src/main.py", b"print('hello')", 14, False),
     ]
@@ -1798,7 +1798,7 @@ def test_map_confirms_replacement_and_rejects_overlapping_local_roots(
     assert store.load().profiles["staging"].local_root == str(staging_root)
 
 
-def test_push_reports_partial_failure_after_continuing_independent_paths(
+def test_push_stops_at_the_first_failure_and_counts_what_did_not_start(
     tmp_path, monkeypatch
 ) -> None:
     store = ConfigurationStore(tmp_path / "configs.json")
@@ -1874,13 +1874,9 @@ def test_push_reports_partial_failure_after_continuing_independent_paths(
     result = invoke(["push", "-r"], store)
 
     assert result[0] == 1
-    assert uploads == [("good.txt", b"good")]
+    assert uploads == []
     assert result[1] == (
-        "Push finished with errors for profile 'prod': "
-        "1 completed, 1 failed, 1 skipped.\n"
+        "Push stopped after a failure for profile 'prod': "
+        "0 completed, 1 failed, 2 not started.\n"
     )
-    assert result[2].endswith(
-        "  failed  blocked: 550 Permission denied\n"
-        "  skipped blocked/child.txt: parent directory 'blocked' is unavailable\n"
-        "  + good.txt\n"
-    )
+    assert result[2].endswith("  failed  blocked: 550 Permission denied\n")

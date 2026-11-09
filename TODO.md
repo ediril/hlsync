@@ -221,9 +221,14 @@
     selector-pruned operations, and diff diagnostics that expose exclusions.
   - Add a way to omit excluded-file diagnostics when their remote traversal cost
     is unwanted.
-  - Evaluate bounded, configurable concurrency using independent FTPS sessions,
-    accounting for shared-host connection limits, deterministic failure
-    handling, and existing staging guarantees.
+  - [x] Upload concurrently over independent FTPS sessions with `push -j N`
+    (default 3, at most 10), continuing with the sessions a shared host accepts,
+    reporting outcomes in plan order, and keeping creation and deletion on the
+    scanning session.
+  - Persist a per-profile connection limit. This needs a new profile
+    configuration field and therefore a configuration version change; confirm
+    the migration with the user first.
+  - Download concurrently for `pull` with the same session model.
   - Design a validated incremental remote manifest only if measurements justify
     it, with explicit invalidation for remote drift, interrupted transfers, and
     configuration or rule changes.
