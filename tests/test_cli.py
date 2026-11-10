@@ -945,6 +945,8 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
     serve_nested_directory = True
 
     class FakeTransport:
+        lists_with_mlsd = True
+
         def __init__(self, profile) -> None:
             del profile
 
@@ -965,6 +967,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
             artifact_preview=None,
             directory_progress=None,
             directory_counts=None,
+            file_progress=None,
         ):
             snapshot_traversal.append(traverse_excluded)
             artifact_recovery_callbacks.append(
@@ -1028,7 +1031,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
             assert not traverse_excluded or include_excluded
             return TreeSnapshot(tuple(entries))
 
-        def list_directory(self, relative_directory, rules):
+        def list_directory(self, relative_directory, rules, **_):
             listed_directories.append(relative_directory.as_posix())
             assert rules.rules == expected_rules
             if relative_directory.as_posix() == "src":
@@ -1104,6 +1107,18 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
         "Verified secure connectivity to profile 'prod'.\n",
         "",
     )
+    FakeTransport.lists_with_mlsd = False
+    FakeTransport.vsftpd = True
+    assert invoke(["connect"], store) == (
+        0,
+        "Verified secure connectivity to profile 'prod'.\n"
+        "Slow listing: the server has no MLSD, so HLSync asks for each file's\n"
+        "  size and time separately; large folders take a while.\n"
+        "  vsFTPd cannot provide MLSD; servers such as ProFTPD and Pure-FTPd\n"
+        "  list a whole folder in one request.\n",
+        "",
+    )
+    FakeTransport.lists_with_mlsd = True
     local_listing = (
         0,
         "Local tree for profile 'prod':\n"
@@ -1153,6 +1168,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
     push_progress = (
         "Checking differences for profile 'prod'...\n"
         "Connecting securely over FTPS...\n"
+        "Comparing local and remote folders...\n"
     )
     assert push_comparison[0] == 0 and push_comparison[2] == push_progress
     assert push_comparison[1].startswith("     src/\n")
@@ -1498,6 +1514,8 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
     listed = []
 
     class RemoteOnlyTransport:
+        lists_with_mlsd = True
+
         def __init__(self, profile):
             pass
 
@@ -1507,7 +1525,7 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
         def __exit__(self, *_):
             pass
 
-        def list_directory(self, relative_directory, rules):
+        def list_directory(self, relative_directory, rules, **_):
             directory = relative_directory.as_posix()
             listed.append(directory)
             if directory == ".":
@@ -1541,6 +1559,7 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
 
 
 class _ListingTransport:
+    lists_with_mlsd = True
     remote: dict = {}
     listed: list = []
 
@@ -1553,7 +1572,7 @@ class _ListingTransport:
     def __exit__(self, *_):
         pass
 
-    def list_directory(self, relative_directory, rules):
+    def list_directory(self, relative_directory, rules, **_):
         directory = relative_directory.as_posix()
         self.listed.append(directory)
         return TreeSnapshot(tuple(
@@ -1687,6 +1706,8 @@ def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> 
     operations = []
 
     class ProtectedTransport:
+        lists_with_mlsd = True
+
         def __init__(self, profile) -> None:
             del profile
 
@@ -1696,7 +1717,7 @@ def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> 
         def __exit__(self, *_):
             return None
 
-        def list_directory(self, relative_directory, rules):
+        def list_directory(self, relative_directory, rules, **_):
             listed.append(relative_directory.as_posix())
             assert relative_directory.as_posix() == "."
             assert rules.excludes("future-dir", target="remote", is_directory=True)
@@ -1868,6 +1889,8 @@ def test_push_stops_at_the_first_failure_and_counts_what_did_not_start(
     uploads = []
 
     class PartiallyWritableTransport:
+        lists_with_mlsd = True
+
         def __init__(self, profile):
             pass
 
@@ -1887,6 +1910,7 @@ def test_push_stops_at_the_first_failure_and_counts_what_did_not_start(
             artifact_recovery=None,
             directory_progress=None,
             directory_counts=None,
+            file_progress=None,
         ):
             del traverse_excluded, artifact_recovery
             if directory_progress is not None:

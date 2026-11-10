@@ -69,7 +69,10 @@ report the outcome without a retained-path reminder.
 After scanning, push shows the planned upload count and total size. Interactive
 terminals show remote reads as completed/discovered directories (such as 2/12)
 and the current path, without animation. The discovered total grows as eligible
-subdirectories are found. During uploads, interactive
+subdirectories are found. On servers without MLSD, the line also counts the
+files whose size and time have been read in the current folder (such as
+312/644 files); see [slow listings](https://github.com/ediril/hlsync/blob/main/docs/diff.md#slow-listings).
+During uploads, interactive
 terminals display a progress bar with bytes sent and files installed. File
 counts advance only after timestamp verification and installation; failures
 remain visible immediately. Redirected output keeps ordinary per-file logs.

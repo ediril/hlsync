@@ -940,9 +940,31 @@ def _effective_current_directory(
 
 def _connect(arguments: argparse.Namespace, store: ConfigurationStore) -> str:
     _, name, profile = _resolve_profile(arguments, store)
-    with ExplicitFTPSTransport(profile):
-        pass
-    return f"Verified secure connectivity to profile '{name}'."
+    with ExplicitFTPSTransport(profile) as transport:
+        note = _slow_listing_note(transport)
+    verified = f"Verified secure connectivity to profile '{name}'."
+    return verified if note is None else f"{verified}\n{note}"
+
+
+def _slow_listing_note(transport: ExplicitFTPSTransport) -> str | None:
+    if transport.lists_with_mlsd:
+        return None
+    advice = (
+        "vsFTPd cannot provide MLSD; servers such as ProFTPD and Pure-FTPd\n"
+        "  list a whole folder in one request."
+        if transport.vsftpd
+        else "Ask your host to enable MLSD, which lists a whole folder in one request."
+    )
+    return (
+        "Slow listing: the server has no MLSD, so HLSync asks for each file's\n"
+        f"  size and time separately; large folders take a while.\n  {advice}"
+    )
+
+
+def _report_connection(transport: ExplicitFTPSTransport, progress: TextIO) -> None:
+    note = _slow_listing_note(transport)
+    if note is not None:
+        print(note, file=progress, flush=True)
 
 
 def _map(
@@ -1620,12 +1642,18 @@ def _list_remote(
     print(f"Listing remote files for profile '{name}'...", file=progress, flush=True)
     print("Connecting securely over FTPS...", file=progress, flush=True)
     with ExplicitFTPSTransport(profile) as transport:
-        raw_snapshot = transport.snapshot(
-            rules,
-            selector,
-            include_excluded=True,
-            traverse_excluded=True,
-        )
+        _report_connection(transport, progress)
+        print("Reading remote files...", file=progress, flush=True)
+        with DirectoryReadProgress(progress, transient=True) as reading:
+            raw_snapshot = transport.snapshot(
+                rules,
+                selector,
+                include_excluded=True,
+                traverse_excluded=True,
+                directory_progress=reading.reading,
+                directory_counts=reading.counts,
+                file_progress=reading.file_read,
+            )
     if not raw_snapshot.entries:
         raise SelectionError(f"file selector '{selector.pattern}' matched no paths")
     snapshot = TreeSnapshot(
@@ -2339,6 +2367,7 @@ def _build_plan(
             traverse_excluded=False,
             directory_progress=reading.reading,
             directory_counts=reading.counts,
+            file_progress=reading.file_read,
             **artifact_options,
         )
     print("Comparing local and remote files...", file=progress, flush=True)
@@ -2449,7 +2478,12 @@ def _diff(
             ),
         )
 
-    with ExplicitFTPSTransport(profile) as transport:
+    with (
+        ExplicitFTPSTransport(profile) as transport,
+        DirectoryReadProgress(progress, transient=True) as reading,
+    ):
+        _report_connection(transport, progress)
+        print("Comparing local and remote folders...", file=progress, flush=True)
         if pending and arguments.show_all:
             for line in _scope_header_lines(
                 pending[-1].display_root,
@@ -2476,9 +2510,12 @@ def _diff(
                 else TreeSnapshot()
             )
             remote_directory_exists = current.has_remote
+            reading.reading(directory)
             try:
                 remote_listing = (
-                    transport.list_directory(directory, rules)
+                    transport.list_directory(
+                        directory, rules, file_progress=reading.file_read
+                    )
                     if current.has_remote
                     else TreeSnapshot()
                 )
@@ -2487,6 +2524,8 @@ def _diff(
                     raise
                 remote_directory_exists = False
                 remote_listing = TreeSnapshot()
+            finally:
+                reading.clear()
             descendants = _descendant_directories(
                 local_listing,
                 remote_listing,
@@ -2898,6 +2937,7 @@ def _transfer(
         print(options, file=progress, flush=True)
     print("Connecting securely over FTPS...", file=progress, flush=True)
     with ExplicitFTPSTransport(profile) as transport, ExitStack() as sessions:
+        _report_connection(transport, progress)
         local, remote, plan = _build_plan(
             arguments,
             root,

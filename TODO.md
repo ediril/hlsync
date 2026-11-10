@@ -223,8 +223,13 @@
     is unwanted.
   - [x] Upload concurrently over independent FTPS sessions with `push -j N`
     (default 4, at most 10), continuing with the sessions a shared host accepts,
-    reporting outcomes in plan order, and keeping creation and deletion on the
-    scanning session.
+    reporting each outcome as it completes, and keeping creation and deletion on
+    the scanning session.
+  - Read LIST-mode file metadata (SIZE and MDTM) over several sessions on
+    servers without MLSD, for diff, list, and push's scan. vsFTPd needs about
+    77 ms per file, so a 644-file folder takes about 50 s on one session.
+  - Skip SIZE and MDTM for LIST entries that the rules exclude when the
+    command does not display or compare them.
   - Persist a per-profile connection limit. This needs a new profile
     configuration field and therefore a configuration version change; confirm
     the migration with the user first.

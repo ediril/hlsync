@@ -151,7 +151,8 @@ class ExplicitFTPSTransport:
 
     def __post_init__(self) -> None:
         self._client: ftplib.FTP_TLS | None = None
-        self._use_mlsd = True
+        self.lists_with_mlsd = True
+        self.vsftpd = False
         self._timestamp_command = "MFMT"
 
     def connect(self) -> None:
@@ -185,13 +186,11 @@ class ExplicitFTPSTransport:
                 line.strip().upper().split(" ", 1)[0]
                 for line in features.splitlines()
             }
+            self.vsftpd = "vsftpd" in client.getwelcome().lower()
             self._timestamp_command = (
-                "MDTM"
-                if "MFMT" not in advertised
-                and "vsftpd" in client.getwelcome().lower()
-                else "MFMT"
+                "MDTM" if "MFMT" not in advertised and self.vsftpd else "MFMT"
             )
-            self._use_mlsd = any(
+            self.lists_with_mlsd = any(
                 line.strip().upper().split(" ", 1)[0] in {"MLST", "MLSD"}
                 for line in features.splitlines()
             )
@@ -226,6 +225,7 @@ class ExplicitFTPSTransport:
         artifact_preview: Callable[[str], None] | None = None,
         directory_progress: Callable[[PurePosixPath], None] | None = None,
         directory_counts: Callable[[int, int], None] | None = None,
+        file_progress: Callable[[int, int], None] | None = None,
     ) -> TreeSnapshot:
         if self._client is None:
             raise TransportError("FTPS transport is not connected")
@@ -240,7 +240,9 @@ class ExplicitFTPSTransport:
             nonlocal completed_directories, discovered_directories
             if directory_progress is not None:
                 directory_progress(relative_directory)
-            listing = self.list_directory(relative_directory, rules)
+            listing = self.list_directory(
+                relative_directory, rules, file_progress=file_progress
+            )
             if relative_directory.parts:
                 listed_directories.add(relative_directory.as_posix())
             if artifact_recovery is not None:
@@ -248,7 +250,9 @@ class ExplicitFTPSTransport:
                 for recovery in recoveries:
                     artifact_recovery(recovery)
                 if recoveries:
-                    listing = self.list_directory(relative_directory, rules)
+                    listing = self.list_directory(
+                        relative_directory, rules, file_progress=file_progress
+                    )
             elif artifact_preview is not None:
                 recovery = self._plan_artifact_recovery(listing, selector, rules)
                 for path in recovery.uploads_to_remove:
@@ -302,8 +306,14 @@ class ExplicitFTPSTransport:
         self,
         relative_directory: PurePosixPath,
         rules: RuleSet,
+        *,
+        file_progress: Callable[[int, int], None] | None = None,
     ) -> TreeSnapshot:
-        """Normalize the negotiated listing format into shared tree metadata."""
+        """Normalize the negotiated listing format into shared tree metadata.
+
+        Without MLSD, each file needs its own metadata requests; file_progress
+        receives (files read, files listed) after each one.
+        """
         client = self._connected_client()
         remote_directory = relative_directory.as_posix()
         if remote_directory == ".":
@@ -313,7 +323,9 @@ class ExplicitFTPSTransport:
                 client.mlsd(
                     remote_directory,
                     facts=["type", "size", "modify"],
-                ) if self._use_mlsd else self._list_facts(relative_directory),
+                )
+                if self.lists_with_mlsd
+                else self._list_facts(relative_directory, file_progress),
                 key=lambda item: item[0],
             )
         except ftplib.error_perm as error:
@@ -401,7 +413,9 @@ class ExplicitFTPSTransport:
         return TreeSnapshot(tuple(entries))
 
     def _list_facts(
-        self, directory: PurePosixPath,
+        self,
+        directory: PurePosixPath,
+        file_progress: Callable[[int, int], None] | None,
     ) -> list[tuple[str, dict[str, str]]]:
         client = self._connected_client()
         lines: list[str] = []
@@ -421,6 +435,8 @@ class ExplicitFTPSTransport:
                 ) from error
         children: list[tuple[str, dict[str, str]]] = []
         client.voidcmd("TYPE I")
+        files_listed = sum(1 for line in lines if line.startswith("-"))
+        files_read = 0
         for line in lines:
             if re.fullmatch(r"total \d+", line):
                 continue
@@ -446,6 +462,9 @@ class ExplicitFTPSTransport:
                 response = client.sendcmd(f"MDTM {remote_path}")
                 _parse_mdtm_response(response, remote_path)
                 facts.update(size=str(size), modify=response.partition(" ")[2].strip())
+                files_read += 1
+                if file_progress is not None:
+                    file_progress(files_read, files_listed)
             children.append((name, facts))
         return children
 

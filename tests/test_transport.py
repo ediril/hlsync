@@ -164,9 +164,13 @@ def test_connects_with_verified_explicit_tls_and_protected_data_channel(
             rules, directory_counts=lambda done, total: counts.append((done, total))
         )
         assert counts == [(0, 1), (1, 3), (2, 3), (3, 3)]
-        transport._use_mlsd = False
-        assert transport.snapshot(rules) == snapshot
-        transport._use_mlsd = True
+        transport.lists_with_mlsd = False
+        file_counts = []
+        assert transport.snapshot(
+            rules, file_progress=lambda read, listed: file_counts.append((read, listed))
+        ) == snapshot
+        assert file_counts == [(1, 1), (1, 1), (1, 2), (2, 2)]
+        transport.lists_with_mlsd = True
         assert [(entry.path, entry.kind) for entry in snapshot.entries] == [
             ("assets", "directory"),
             ("assets/logo.svg", "file"),
@@ -371,7 +375,7 @@ def test_push_artifact_recovery_cleans_staging_and_restores_missing_destination(
     transport._client = client
     listed_directories = []
 
-    def list_directory(relative_directory, rules):
+    def list_directory(relative_directory, rules, **_):
         assert rules == RuleSet()
         directory = relative_directory.as_posix()
         listed_directories.append(directory)
@@ -627,9 +631,9 @@ def test_cli_shallow_scope_and_recursive_defaults_over_ftps(
     visited = []
     original_listing = ExplicitFTPSTransport.list_directory
 
-    def list_directory(transport, directory, rules):
+    def list_directory(transport, directory, rules, **options):
         visited.append(directory.as_posix())
-        return original_listing(transport, directory, rules)
+        return original_listing(transport, directory, rules, **options)
 
     monkeypatch.setattr(ExplicitFTPSTransport, "list_directory", list_directory)
 

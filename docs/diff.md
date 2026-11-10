@@ -25,6 +25,11 @@ hlsync diff -p
 `--pull` changes the perspective for changed existing files and retains
 remote-only paths.
 
+Diff compares one folder at a time and prints each folder's changes as soon as
+it is compared. While a folder is being read, interactive terminals show a
+status line such as `Reading gallery/static/ · 312/644 files`, which clears
+before results print. Redirected output contains only the results.
+
 By default, diff shows only what the matching push or pull would do: uploads,
 updates, deletions, and conflicts, under their folder headings. A final
 `Not shown:` line counts what was hidden. Widen the view with:
@@ -91,3 +96,13 @@ local only, `r` means remote only, and a blank means both sides. For example,
 `x   notes/ ▸` exists on both sides but is locally excluded, while
 `# r millionminds/ ▸` exists only remotely and is remotely excluded. Exclusion
 source never changes the presence column.
+
+## Slow listings
+
+Servers that support MLSD return a whole folder, with exact sizes and times, in
+one request. Without MLSD, HLSync reads the folder with LIST and then asks for
+each file's size and time separately, two requests per file, so a folder of
+several hundred files can take a minute. HLSync reports this after connecting,
+and `hlsync connect` reports it too. vsFTPd has no MLSD support at all;
+servers such as ProFTPD and Pure-FTPd provide it, so ask your host whether
+another FTP server is available. Push's remote scan has the same cost.
