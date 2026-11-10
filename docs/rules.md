@@ -10,7 +10,9 @@ root. Git worktrees are supported; no Git installation is needed.
 Explicit HLSync rules override this baseline; profile rules override common rules.
 To deploy a Git-ignored path, use `hlsync include vendor/` (or a specific file).
 Ignore files above the repository root, Git's global excludes, and the Git index
-are not consulted; matching tracked files are excluded too.
+are not consulted; matching tracked files are excluded too. `hlsync rules`
+lists the `.gitignore` patterns that apply to the profile, so a path excluded by
+Git shows its cause there.
 
 **Review `hlsync push --dry -p` before pruning:** with `-p`, locally excluded
 files that are already deployed are deleted remotely. Without `-p`, their remote
@@ -38,7 +40,7 @@ Manage common exclusions and inclusions from any directory with `-c` /
 hlsync exclude -c '*.tmp'
 hlsync include -c 'public/*.tmp'
 hlsync rules -c      # inspect common rules
-hlsync rules rm c4   # c prefix selects common rules
+hlsync exclude -d c4 # c prefix selects common rules
 ```
 
 Profile rules are the extra rules for one profile only. Common rules apply
@@ -48,8 +50,12 @@ rule for the paths both match. That includes broad profile inclusions: after
 the common exclusion. Add `hlsync exclude --anywhere .DS_Store` to the profile
 to exclude it there again.
 
-`hlsync rules` shows the common rules first and then the profile rules, each
-grouped by folder. Common rules have `c`-prefixed IDs such as `c4`; profile rule
+`hlsync rules` lists everything that decides what syncs, from lowest to highest
+precedence: the applied `.gitignore` patterns by file, then the common rules,
+then the profile rules, each grouped by folder. `.gitignore` files are shown
+relative to the local root, so `../.gitignore` sits above it, and patterns
+appear exactly as written. Ignore files inside Git-ignored folders are not
+listed because they cannot affect anything. Common rules have `c`-prefixed IDs such as `c4`; profile rule
 IDs remain numeric. IDs identify only current rules and may be reused after a
 rule is removed. HLSync never silently adds new defaults to an existing common
 rules file.
@@ -133,9 +139,12 @@ redundant exact rules but preserves ambiguous wildcard overlaps.
 
 ```console
 hlsync rules
-hlsync rules rm 3 5 c4
+hlsync exclude -d 3 5 c4
+hlsync include -d 4
 ```
 
-`rules rm` takes several IDs, as separate operands or comma groups. Every ID is
-checked before any rule is removed. `hlsync rules` describes wildcards in words,
+`-d` / `--drop` removes rules by ID, several at once as separate operands or
+comma groups. `exclude -d` removes only exclude rules and `include -d` only
+include rules; naming the other kind is an error that points to the right
+command. Every ID is checked before any rule is removed. `hlsync rules` describes wildcards in words,
 such as `*.webp (all subfolders)` or `*.webp (this folder only)`.

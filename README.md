@@ -67,7 +67,7 @@ provide one directly. Both `diff` and `push` recurse by default. Use `-s` /
 hlsync profiles                  # list profiles; * marks the current one
 hlsync exclude node_modules      # keep a path out of deployments
 hlsync include 'static/*.webp'   # bring back Git-ignored files
-hlsync rules                     # show common and profile rules
+hlsync rules                     # show rules and applied .gitignore patterns
 hlsync list -r                   # local tree with exclusions marked
 hlsync diff                      # what push would change, read-only
 hlsync push --dry                # preview the exact push

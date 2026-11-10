@@ -186,7 +186,7 @@ def test_rule_operands_refuse_shell_expansion_and_keep_wildcards(
     assert [rule.pattern for rule in store.load().profiles["prod"].rules] == [
         "static/a.webp", "static/b.webp",
     ]
-    assert invoke(["rules", "rm", "1,2"], store)[0] == 0
+    assert invoke(["include", "-d", "1,2"], store)[0] == 0
 
     assert invoke(["exclude", "static/*.webp"], store)[0] == 0
     rules = _effective_rules(store, store.load().profiles["prod"])
@@ -308,12 +308,12 @@ def test_profile_lifecycle_uses_production_credentials_and_version(
     assert "--info" not in profile_help
     rules_help = invoke(["help", "rules"], store)[1]
     assert "hlsync [PROFILE] rules" in rules_help
-    assert "hlsync [PROFILE] rules rm RULE_ID" in rules_help
     assert "--exclude" not in rules_help
     exclude_help = invoke(["help", "exclude"], store)[1]
     assert "hlsync [PROFILE] exclude [--remote] [--anywhere | --shallow]" in (
         exclude_help
     )
+    assert "hlsync [PROFILE] exclude -d RULE_ID ..." in exclude_help
     assert "include paths, overriding broader exclusions" in invoke(
         ["help"], store
     )[1]
@@ -524,20 +524,21 @@ def test_common_rules_seed_outside_profiles_and_allow_profile_overrides(
     assert "x .DS_Store\n" not in included
     assert "x scratch.tmp\n" not in included
     combined = invoke(["rules"], store)[1]
-    common_section, profile_section, _ = combined.split("\n\n")
+    _, common_section, profile_section, _ = combined.split("\n\n")
     assert common_section.startswith("Common rules (all profiles):\n")
     assert f"c{exclusion_id}  exclude *.tmp\n" in common_section
     assert profile_section == (
         "Profile rules ('prod' only):\n  Everywhere\n      1  include *.tmp"
     )
     assert combined.endswith(
-        "Profile rules override common rules; later matching rules win.\n"
+        "Rules override .gitignore; profile rules override common rules; "
+        "later matching rules win.\n"
     )
-    invalid_common_id = invoke(["rules", "-c", "rm", "8"], store)
+    invalid_common_id = invoke(["exclude", "-c", "-d", "8"], store)
     assert invalid_common_id[0] == 1
     assert "rule id must be c-prefixed (for example c3)" in invalid_common_id[2]
     monkeypatch.chdir(outside)
-    assert invoke(["rules", "rm", f"c{inclusion_id}"], store) == (
+    assert invoke(["include", "-d", f"c{inclusion_id}"], store) == (
         0,
         "Common rules removed:\n"
         f"  c{inclusion_id}  include .DS_Store (everywhere)\n",
@@ -559,7 +560,7 @@ def test_common_rules_seed_outside_profiles_and_allow_profile_overrides(
     )
 
 
-def test_rules_rm_removes_several_ids_across_scopes_or_none(
+def test_drop_removes_several_ids_across_scopes_or_none(
     tmp_path, monkeypatch
 ) -> None:
     store = ConfigurationStore(tmp_path / "configs.json")
@@ -579,12 +580,17 @@ def test_rules_rm_removes_several_ids_across_scopes_or_none(
     common_store = CommonRuleStore(tmp_path / "rules.json")
     before = (store.load().profiles["prod"].rules, common_store.load().rules)
 
-    unknown = invoke(["rules", "rm", "1", "c4", "99"], store)
+    unknown = invoke(["exclude", "-d", "1", "c4", "99"], store)
     assert unknown[0] == 1
     assert "profile 'prod' has no rule with id 99" in unknown[2]
+    assert invoke(["include", "-d", "c4", "2"], store) == (
+        1,
+        "",
+        "hlsync: error: rule c4 is an exclude rule; use 'hlsync exclude -d c4'\n",
+    )
     assert (store.load().profiles["prod"].rules, common_store.load().rules) == before
 
-    assert invoke(["rules", "rm", "3,c4", "1", "c4"], store) == (
+    assert invoke(["exclude", "-d", "3,c4", "1", "c4"], store) == (
         0,
         "Common rules removed:\n  c4  exclude .DS_Store (everywhere)\n"
         "Rules removed for profile 'prod':\n"
@@ -594,6 +600,43 @@ def test_rules_rm_removes_several_ids_across_scopes_or_none(
     )
     assert [rule.id for rule in store.load().profiles["prod"].rules] == [2]
     assert 4 not in {rule.id for rule in common_store.load().rules}
+
+
+def test_rules_lists_the_gitignore_patterns_that_apply(
+    tmp_path, monkeypatch
+) -> None:
+    store = ConfigurationStore(tmp_path / "configs.json")
+    repository = tmp_path / "repository"
+    workspace = repository / "site"
+    (repository / ".git").mkdir(parents=True)
+    (workspace / "sub").mkdir(parents=True)
+    (workspace / "ignored").mkdir()
+    (repository / ".gitignore").write_text(
+        "# build output\nsecret.html\n\nignored/\n", encoding="utf-8"
+    )
+    (workspace / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (workspace / "sub" / ".gitignore").write_text("draft.txt\n", encoding="utf-8")
+    (workspace / "ignored" / ".gitignore").write_text("x\n", encoding="utf-8")
+    invoke(
+        [
+            "create", "prod", "--host", "ftp.example.com",
+            "--remote-root", "/public_html", "--local-root", str(workspace),
+        ],
+        store,
+    )
+    monkeypatch.chdir(workspace)
+
+    listing = invoke(["rules"], store)[1]
+    assert listing.split("\n\n")[0] == (
+        ".gitignore patterns (lowest precedence):\n"
+        "  ../.gitignore\n"
+        "    secret.html\n"
+        "    ignored/\n"
+        "  .gitignore\n"
+        "    *.log\n"
+        "  sub/.gitignore\n"
+        "    draft.txt"
+    )
 
 
 def test_cli_refuses_invalid_profile_mutations(tmp_path) -> None:
@@ -804,12 +847,13 @@ def test_ordered_exclusion_commands_persist_reinclusion(
     assert "      nested.js\n" in recursive_directory_view[1]
     rules_view = invoke(["rules"], store)
     assert rules_view[0] == 0
-    profile_view = rules_view[1].split("\n\n")[1]
+    profile_view = rules_view[1].split("\n\n")[2]
     assert profile_view.index("  ./\n") < profile_view.index("  .git/\n")
     assert profile_view.index("  .git/\n") < profile_view.index("  docs/\n")
     assert "     2  exclude all contents\n     7  include keep.js\n" in rules_view[1]
     assert rules_view[1].endswith(
-        "Profile rules override common rules; later matching rules win.\n"
+        "Rules override .gitignore; profile rules override common rules; "
+        "later matching rules win.\n"
     )
     list_stdout = invoke(["profiles"], store)[1]
     assert "* prod\n" in list_stdout
@@ -818,7 +862,7 @@ def test_ordered_exclusion_commands_persist_reinclusion(
     assert f"  Local root: {workspace}\n" in profile_stdout
     assert "  Rules: 9\n" in profile_stdout
     assert invoke(["root"], store) == (0, f"{workspace}\n", "")
-    assert invoke(["rules", "rm", "8"], store) == (
+    assert invoke(["include", "-d", "8"], store) == (
         0,
         "Rules removed for profile 'prod':\n"
         "  8  include node_modules/package/ (all contents)\n",
