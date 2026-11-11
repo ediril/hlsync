@@ -432,6 +432,42 @@ def test_add_maps_the_current_directory_after_confirmation(
     assert store.load().profiles["prod"].local_root == str(workspace)
 
 
+def test_create_takes_the_host_from_the_environment_when_omitted(
+    tmp_path, monkeypatch
+) -> None:
+    store = ConfigurationStore(tmp_path / "configs.json")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.delenv("PROD_FTPS_HOST", raising=False)
+    assert invoke(
+        ["create", "prod", "-r", "/site", "--local-root", str(workspace)], store
+    ) == (1, "", "hlsync: error: create requires --host or PROD_FTPS_HOST\n")
+    assert not store.path.exists()
+
+    monkeypatch.setenv("PROD_FTPS_HOST", "ftp.example.com")
+    assert invoke(
+        ["create", "prod", "-r", "/site", "--local-root", str(workspace)], store
+    ) == (
+        0,
+        "Created FTPS profile 'prod' on ftp.example.com (from PROD_FTPS_HOST).\n"
+        f"Mapped '{workspace}' to 'prod:/site'.\n",
+        "",
+    )
+    other = tmp_path / "other"
+    other.mkdir()
+    assert invoke(
+        [
+            "create", "other", "--host", "ftp.other.example", "-r", "/other",
+            "--local-root", str(other),
+        ],
+        store,
+    )[1].startswith("Created FTPS profile 'other'.\n")
+    profiles = store.load().profiles
+    assert (profiles["prod"].host, profiles["other"].host) == (
+        "ftp.example.com", "ftp.other.example",
+    )
+
+
 def test_add_prompts_for_another_local_root_when_current_is_declined(
     tmp_path, monkeypatch
 ) -> None:

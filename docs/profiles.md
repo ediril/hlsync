@@ -19,6 +19,18 @@ hlsync create staging \
   --password-env STAGING_FTPS_PASSWORD
 ```
 
+`--host` defaults to the `PROD_FTPS_HOST` environment variable, and
+`-r` is short for `--remote-root`. With the host set in your shell, a profile
+needs only a name and a remote root:
+
+```console
+export PROD_FTPS_HOST=ftp.example.com
+hlsync create staging -r /public_html/staging
+```
+
+`create` copies the host into the profile and names it in its output, so later
+changes to `PROD_FTPS_HOST` do not affect existing profiles.
+
 HLSync stores the canonical absolute local root and maps every descendant to
 the same relative path under the remote root. Roots may not overlap across
 profiles. Remapping requires confirmation and defaults to no.

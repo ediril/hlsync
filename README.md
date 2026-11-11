@@ -46,6 +46,8 @@ PROD_FTPS_USERNAME
 PROD_FTPS_PASSWORD
 ```
 
+Set `PROD_FTPS_HOST` too and `create` can omit `--host`.
+
 From the local project root:
 
 ```console

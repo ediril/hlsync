@@ -20,6 +20,7 @@ from hlsync.comparison import (
     mark_untraversed_directories,
 )
 from hlsync.config import (
+    DEFAULT_HOST_ENV,
     DEFAULT_PASSWORD_ENV,
     DEFAULT_USERNAME_ENV,
     ApplicationConfiguration,
@@ -380,9 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     create_parser.add_argument("profile_name", help="new profile name")
-    create_parser.add_argument("--host", required=True, help="FTPS server host")
     create_parser.add_argument(
-        "--remote-root", required=True, help="absolute server directory"
+        "--host", help=f"FTPS server host (default: ${DEFAULT_HOST_ENV})"
+    )
+    create_parser.add_argument(
+        "-r", "--remote-root", required=True, help="absolute server directory"
     )
     create_parser.add_argument(
         "--protocol",
@@ -427,8 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
         "map",
         help="change a profile's local or remote root",
         usage=(
-            "hlsync map [PROFILE] [--local-root PATH] [--remote-root PATH]\n"
-            "       hlsync PROFILE map [--local-root PATH] [--remote-root PATH]"
+            "hlsync map [PROFILE] [--local-root PATH] [-r PATH]\n"
+            "       hlsync PROFILE map [--local-root PATH] [-r PATH]"
         ),
         description=(
             "Change mapped roots after a [y/N] confirmation. Omitted roots stay "
@@ -444,6 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="new local root; defaults to the current directory",
     )
     map_parser.add_argument(
+        "-r",
         "--remote-root",
         metavar="PATH",
         help="new absolute remote root; omitted leaves it unchanged",
@@ -820,9 +824,12 @@ def _create_profile(
     configuration = store.load()
     if name in configuration.profiles:
         raise ConfigurationError(f"profile '{name}' already exists")
+    host = arguments.host or os.environ.get(DEFAULT_HOST_ENV, "").strip()
+    if not host:
+        raise ConfigurationError(f"create requires --host or {DEFAULT_HOST_ENV}")
     profile = ProfileConfiguration(
         type=arguments.protocol,
-        host=arguments.host,
+        host=host,
         remote_root=arguments.remote_root,
         port=arguments.port,
         username_env=(
@@ -863,8 +870,9 @@ def _create_profile(
         local_root=local_root,
         remote_root=profile.remote_root,
     )
+    source = "" if arguments.host else f" on {host} (from {DEFAULT_HOST_ENV})"
     message = (
-        f"Created FTPS profile '{name}'.\n"
+        f"Created FTPS profile '{name}'{source}.\n"
         f"Mapped '{local_root}' to '{name}:{profile.remote_root}'."
     )
     _common_rule_store(store).load()
