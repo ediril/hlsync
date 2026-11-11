@@ -4,7 +4,7 @@ HLSync (`hlsync`) is a command-line workflow for deploying local
 projects to shared hosting over explicit FTP over TLS (FTPS): map once, preview
 the diff, then push the intended files.
 
-![HLSync mapping a website folder to an FTPS server, previewing the diff, and pushing the files](https://raw.githubusercontent.com/ediril/hlsync/main/demos/hlsync.gif)
+![HLSync mapping a website folder to an FTPS server, previewing the diff, and pushing the files](https://raw.githubusercontent.com/ediril/hlsync/main/hlsync.gif)
 
 HLSync is pre-alpha software. Commands and configuration may change before a
 stable release.
