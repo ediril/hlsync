@@ -54,6 +54,12 @@ from hlsync.selection import (
     FileSelectorSet,
     SelectionError,
 )
+from hlsync.shell import (
+    ShellSetupError,
+    display_path,
+    install_shell_function,
+    startup_file,
+)
 from hlsync.snapshot import (
     SnapshotError,
     TreeEntry,
@@ -124,6 +130,7 @@ CANONICAL_COMMANDS = (
     "map",
     "remove",
     "root",
+    "cd",
     "profile",
     "profiles",
     "list",
@@ -133,6 +140,7 @@ CANONICAL_COMMANDS = (
     "rules",
     "exclude",
     "include",
+    "setup",
     "help",
     "version",
 )
@@ -578,6 +586,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="profile name; inferred from the current directory when omitted",
     )
 
+    cd_parser = subparsers.add_parser(
+        "cd",
+        help="change to a profile's local root (needs 'hlsync setup')",
+        usage="hlsync cd [PROFILE]",
+        description=(
+            "Change the shell's directory to a profile's local root. A program "
+            "cannot change its shell's directory, so this works through the "
+            "shell function that 'hlsync setup' installs."
+        ),
+    )
+    cd_parser.add_argument(
+        "profile_name",
+        nargs="?",
+        metavar="PROFILE",
+        help="profile name; inferred from the current directory when omitted",
+    )
+
     profile_parser = subparsers.add_parser(
         "profile",
         help="show the current profile or detailed profile information",
@@ -785,6 +810,15 @@ def build_parser() -> argparse.ArgumentParser:
             help="overwrite destination files that are not older than the source",
         )
 
+    subparsers.add_parser(
+        "setup",
+        help="enable 'hlsync cd' in your zsh or bash startup file",
+        description=(
+            "Add a small hlsync shell function to ~/.zshrc or ~/.bashrc, "
+            "chosen from $SHELL, so 'hlsync cd PROFILE' changes directory. "
+            "Running it again updates the function in place."
+        ),
+    )
     help_parser = subparsers.add_parser("help", help="show command help")
     help_parser.add_argument("topic", nargs="?")
 
@@ -973,15 +1007,15 @@ def _connection_notes(
 def _slow_listing_note(transport: ExplicitFTPSTransport) -> str | None:
     if transport.lists_with_mlsd:
         return None
-    advice = (
-        "vsFTPd cannot provide MLSD; servers such as ProFTPD and Pure-FTPd\n"
-        "  list a whole folder in one request."
-        if transport.vsftpd
-        else "Ask your host to enable MLSD, which lists a whole folder in one request."
-    )
+    if transport.vsftpd:
+        return (
+            "Your FTP server (vsFTPd) lists large folders slowly because it has "
+            "no MLSD.\n  Consider a host running ProFTPD or Pure-FTPd, which list "
+            "whole folders at once."
+        )
     return (
-        "Slow listing: the server has no MLSD, so HLSync asks for each file's\n"
-        f"  size and time separately; large folders take a while.\n  {advice}"
+        "Your FTP server lists large folders slowly because it has no MLSD.\n"
+        "  Ask your host to enable MLSD, which lists whole folders at once."
     )
 
 
@@ -1527,6 +1561,23 @@ def _show_profile(
             f"  Password env: {profile.password_env}",
             f"  Rules: {len(profile.rules)}",
         )
+    )
+
+
+def _setup_shell() -> str:
+    try:
+        path = startup_file()
+        replaced = install_shell_function(path)
+    except ShellSetupError as error:
+        raise ConfigurationError(str(error)) from error
+    except OSError as error:
+        raise ConfigurationError(f"could not update {path}: {error}") from error
+    shown = display_path(path)
+    action = "Updated" if replaced else "Added"
+    return (
+        f"{action} the hlsync shell function in {shown}.\n"
+        f"Open a new terminal, or run: source {shown}\n"
+        "Then 'hlsync cd PROFILE' changes to that profile's local root."
     )
 
 
@@ -3109,6 +3160,13 @@ def run(
             message = _remove(arguments, configuration_store)
         elif arguments.command == "root":
             message = _show_root(arguments, configuration_store)
+        elif arguments.command == "cd":
+            raise ConfigurationError(
+                "cd needs the shell function; run 'hlsync setup', then open "
+                "a new terminal"
+            )
+        elif arguments.command == "setup":
+            message = _setup_shell()
         elif arguments.command == "profile":
             message = _show_profile(arguments, configuration_store)
         elif arguments.command == "profiles":

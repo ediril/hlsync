@@ -1149,10 +1149,10 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
     assert invoke(["connect"], store) == (
         0,
         "Verified secure connectivity to profile 'prod'.\n"
-        "Slow listing: the server has no MLSD, so HLSync asks for each file's\n"
-        "  size and time separately; large folders take a while.\n"
-        "  vsFTPd cannot provide MLSD; servers such as ProFTPD and Pure-FTPd\n"
-        "  list a whole folder in one request.\n",
+        "Your FTP server (vsFTPd) lists large folders slowly because it has "
+        "no MLSD.\n"
+        "  Consider a host running ProFTPD or Pure-FTPd, which list whole "
+        "folders at once.\n",
         "",
     )
     FakeTransport.lists_with_mlsd = True

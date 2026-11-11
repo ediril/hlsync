@@ -67,6 +67,7 @@ provide one directly. Both `diff` and `push` recurse by default. Use `-s` /
 
 ```console
 hlsync profiles                  # list profiles; * marks the current one
+hlsync cd staging                # go to a profile's folder (after hlsync setup)
 hlsync exclude node_modules      # keep a path out of deployments
 hlsync include 'static/*.webp'   # bring back Git-ignored files
 hlsync rules                     # show rules and applied .gitignore patterns

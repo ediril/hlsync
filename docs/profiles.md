@@ -61,6 +61,7 @@ hlsync profile --details # current profile details
 hlsync profile staging   # verify and print a named profile
 hlsync profile staging --details
 hlsync root staging      # print the mapped local root only
+hlsync cd staging        # change to it (after a one-time hlsync setup)
 hlsync connect            # verify FTPS, then disconnect
 hlsync remove staging    # remove local configuration only
 ```
@@ -70,12 +71,21 @@ and suggests `hlsync PROFILE COMMAND`. Commands that require a profile need
 that explicit profile prefix. Named and inferred lookups both require
 `--details` for the full view.
 
-Because `root` writes only the canonical path, it can be composed with the
-shell when you want to switch directories:
+To switch to a profile's folder, run `hlsync setup` once. It adds a small
+`hlsync` shell function to `~/.zshrc` or `~/.bashrc`, chosen from `$SHELL`.
+Open a new terminal, and then:
 
 ```console
-cd "$(hlsync root staging)"
+hlsync cd staging   # change to the staging profile's local root
+hlsync cd           # back to the current profile's root from a subfolder
 ```
+
+A program cannot change its shell's directory, so `cd` needs that function;
+without it, `hlsync cd` explains how to run `setup`. The function only handles
+`hlsync cd`; every other command runs `hlsync` unchanged. Running `setup` again
+updates the function in place, and a symlinked startup file stays a symlink.
+Without setup, `root` prints only the path, so `cd "$(hlsync root staging)"`
+also works.
 
 An unqualified profile-aware command fails outside every mapped root. When you
 intentionally need to operate from elsewhere—or override the profile inferred
