@@ -17,3 +17,6 @@ venv/
 !website/assets/favicon-32x32.png
 !website/assets/apple-touch-icon.png
 google5449695f2930756b.html
+
+# Rendered from demos/*.cast with agg
+demos/*.gif
