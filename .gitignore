@@ -18,5 +18,6 @@ venv/
 !website/assets/apple-touch-icon.png
 google5449695f2930756b.html
 
-# Rendered from demos/*.cast with agg
+# Rendered from demos/*.cast with agg; only the README's GIF is kept
 demos/*.gif
+!demos/hlsync.gif
