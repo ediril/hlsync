@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ftplib
 import io
 import os
 import ssl
@@ -236,24 +237,48 @@ def test_rejects_an_untrusted_server_certificate(tls_ftp_server, monkeypatch) ->
         transport.connect()
 
 
-def test_rejects_an_inaccessible_profile_root(tls_ftp_server, monkeypatch) -> None:
-    port, certificate, _ = tls_ftp_server
+def test_a_missing_remote_root_reads_empty_until_its_folders_are_created(
+    tls_ftp_server, monkeypatch
+) -> None:
+    port, certificate, root = tls_ftp_server
+    (root / "occupied").write_text("a file, not a folder", encoding="utf-8")
     monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
     monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
     context = ssl.create_default_context(cafile=os.fspath(certificate))
-    transport = ExplicitFTPSTransport(
-        ProfileConfiguration(
-            host="localhost",
-            remote_root="/missing",
-            port=port,
-            username_env="PROD_FTPS_USERNAME",
-            password_env="PROD_FTPS_PASSWORD",
-        ),
-        ssl_context=context,
-    )
 
-    with pytest.raises(TransportError, match="No such file or directory"):
-        transport.connect()
+    def transport(remote_root):
+        return ExplicitFTPSTransport(
+            ProfileConfiguration(
+                host="localhost",
+                remote_root=remote_root,
+                port=port,
+                username_env="PROD_FTPS_USERNAME",
+                password_env="PROD_FTPS_PASSWORD",
+            ),
+            ssl_context=context,
+        )
+
+    with pytest.raises(TransportError, match="/occupied"):
+        transport("/occupied").connect()
+    with pytest.raises(TransportError, match="/occupied/deeper"):
+        transport("/occupied/deeper").connect()
+
+    for lists_with_mlsd in (True, False):
+        with transport("/site/releases/current") as missing:
+            missing.lists_with_mlsd = lists_with_mlsd
+            assert missing._find_missing_root(
+                missing._client, ftplib.error_perm("550")
+            ) == ("site", "releases", "current")
+    with transport("/site/releases/current") as missing:
+        assert missing.missing_remote_root
+        assert missing.snapshot(RuleSet()) == TreeSnapshot()
+        with pytest.raises(TransportError, match="does not exist"):
+            missing.make_directory("assets")
+        assert not (root / "assets").exists()
+        missing.create_remote_root()
+        assert not missing.missing_remote_root
+        missing.make_directory("assets")
+    assert (root / "site" / "releases" / "current" / "assets").is_dir()
 
 
 @pytest.mark.parametrize("timestamp_command", ["MFMT", "MDTM"])
@@ -843,6 +868,55 @@ def test_push_of_a_subfolder_keeps_existing_remote_ancestors(
     assert (remote_root / "gallery/templates/partials/head.php").read_text() == "head"
     push("fresh/nested")
     assert (remote_root / "fresh/nested/new.txt").read_text() == "new"
+
+
+def test_push_creates_every_missing_folder_of_the_remote_root(
+    tls_ftp_server, tmp_path, monkeypatch
+):
+    port, certificate, remote_root = tls_ftp_server
+    local_root = tmp_path / "local"
+    (local_root / "assets").mkdir(parents=True)
+    (local_root / "index.html").write_text("index")
+    (local_root / "assets" / "app.js").write_text("app")
+    monkeypatch.chdir(local_root)
+    monkeypatch.setenv("PROD_FTPS_USERNAME", "prod-user")
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "prod-password")
+    store = ConfigurationStore(tmp_path / "configs.json")
+    store.save(ApplicationConfiguration(profiles={
+        "prod": ProfileConfiguration(
+            host="localhost", port=port, remote_root="/site/releases/current",
+            local_root=str(local_root),
+        ),
+    }))
+    context = ssl.create_default_context(cafile=os.fspath(certificate))
+    monkeypatch.setattr(
+        "hlsync.cli.ExplicitFTPSTransport",
+        lambda profile: ExplicitFTPSTransport(profile, ssl_context=context),
+    )
+
+    def invoke(*arguments):
+        output, progress = io.StringIO(), io.StringIO()
+        status = run(list(arguments), store=store, stdout=output, stderr=progress)
+        return status, output.getvalue(), progress.getvalue()
+
+    notice = (
+        "Remote root /site/releases/current does not exist yet; push will create it.\n"
+    )
+    status, output, progress = invoke("diff", "-r")
+    assert status == 0 and notice in progress
+    assert output == "+  l assets/\n+  l   app.js\n+  l index.html\n"
+    assert invoke("push", "--dry")[0] == 0
+    assert not (remote_root / "site").exists()
+
+    status, _, progress = invoke("push", "-j", "2")
+    assert status == 0, progress
+    assert notice in progress
+    assert "Created remote root /site/releases/current.\n" in progress
+    assert "Using 2 connections.\n" in progress
+    current = remote_root / "site" / "releases" / "current"
+    assert (current / "index.html").read_text() == "index"
+    assert (current / "assets" / "app.js").read_text() == "app"
+    assert notice not in invoke("diff")[2]
 
 
 def test_push_uploads_over_parallel_sessions_and_reports_each_file(

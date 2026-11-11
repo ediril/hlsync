@@ -81,6 +81,24 @@ def _parse_modify_timestamp(
     return timegm(timestamp.timetuple()) * 1_000_000_000 + fractional_ns, precision_ns
 
 
+def _parse_list_line(line: str) -> tuple[str, str] | None:
+    """Return (name, kind) for a Unix LIST line, or None for '.', '..', totals."""
+    if re.fullmatch(r"total \d+", line):
+        return None
+    fields = line.split(maxsplit=8)
+    if len(fields) != 9 or not re.fullmatch(r"[-dl][rwxStTs-]{9}[+@.]?", fields[0]):
+        raise TransportError(f"unsupported LIST entry: {line!r}")
+    name = fields[8]
+    kind = fields[0][0]
+    if kind == "l":
+        name = name.split(" -> ", 1)[0]
+    if name in {".", ".."}:
+        return None
+    if not name or "/" in name or "\r" in name or "\n" in name:
+        raise TransportError(f"invalid name in remote listing: {name!r}")
+    return name, kind
+
+
 def _parse_mlsd_modify(value: str, path: str) -> tuple[int, int]:
     return _parse_modify_timestamp(value, path, source="MLSD modify")
 
@@ -153,6 +171,8 @@ class ExplicitFTPSTransport:
         self._client: ftplib.FTP_TLS | None = None
         self.lists_with_mlsd = True
         self.vsftpd = False
+        # Folders of the remote root that do not exist yet, outermost first.
+        self._missing_root: tuple[str, ...] = ()
         self._timestamp_command = "MFMT"
 
     def connect(self) -> None:
@@ -180,7 +200,6 @@ class ExplicitFTPSTransport:
             client.auth()
             client.login(username, password)
             client.prot_p()
-            client.cwd(self.configuration.remote_root)
             features = client.sendcmd("FEAT")
             advertised = {
                 line.strip().upper().split(" ", 1)[0]
@@ -194,6 +213,10 @@ class ExplicitFTPSTransport:
                 line.strip().upper().split(" ", 1)[0] in {"MLST", "MLSD"}
                 for line in features.splitlines()
             )
+            try:
+                client.cwd(self.configuration.remote_root)
+            except ftplib.error_perm as error:
+                self._missing_root = self._find_missing_root(client, error)
         except (OSError, ftplib.Error, ssl.SSLError) as error:
             try:
                 client.close()
@@ -204,6 +227,66 @@ class ExplicitFTPSTransport:
                     f"{self.configuration.remote_root}: {error}"
                 ) from error
         self._client = client
+
+    @property
+    def missing_remote_root(self) -> bool:
+        return bool(self._missing_root)
+
+    def _find_missing_root(
+        self, client: ftplib.FTP_TLS, refusal: ftplib.error_perm
+    ) -> tuple[str, ...]:
+        """Return the absent folders of the remote root, outermost first.
+
+        The nearest enterable ancestor must list no entry for the next folder;
+        an entry there that cannot be entered keeps the original refusal.
+        """
+        root = PurePosixPath(self.configuration.remote_root)
+        for ancestor in root.parents:
+            try:
+                client.cwd(ancestor.as_posix())
+            except ftplib.error_perm:
+                continue
+            missing = root.parts[len(ancestor.parts):]
+            if missing[0] in self._names_in_working_directory(client):
+                raise refusal
+            return missing
+        raise refusal
+
+    def _names_in_working_directory(self, client: ftplib.FTP_TLS) -> set[str]:
+        if self.lists_with_mlsd:
+            return {name for name, _ in client.mlsd(facts=["type"])}
+        lines: list[str] = []
+        client.retrlines("LIST -a", lines.append)
+        return {
+            parsed[0] for parsed in map(_parse_list_line, lines) if parsed is not None
+        }
+
+    def create_remote_root(self) -> None:
+        """Create each missing folder of the remote root, then enter it."""
+        client = self._client
+        if client is None:
+            raise TransportError("FTPS transport is not connected")
+        root = PurePosixPath(self.configuration.remote_root)
+        folder = PurePosixPath(*root.parts[: len(root.parts) - len(self._missing_root)])
+        for name in self._missing_root:
+            folder /= name
+            try:
+                client.mkd(folder.as_posix())
+            except ftplib.error_perm as error:
+                raise PathOperationError(
+                    f"could not create remote root folder '{folder}': {error}"
+                ) from error
+            except (OSError, ftplib.Error, ssl.SSLError) as error:
+                raise TransportError(
+                    f"could not create remote root folder '{folder}': {error}"
+                ) from error
+        try:
+            client.cwd(root.as_posix())
+        except (OSError, ftplib.Error, ssl.SSLError) as error:
+            raise TransportError(
+                f"could not enter created remote root '{root}': {error}"
+            ) from error
+        self._missing_root = ()
 
     def close(self) -> None:
         if self._client is None:
@@ -314,6 +397,8 @@ class ExplicitFTPSTransport:
         Without MLSD, each file needs its own metadata requests; file_progress
         receives (files read, files listed) after each one.
         """
+        if self._missing_root:
+            return TreeSnapshot()
         client = self._connected_client()
         remote_directory = relative_directory.as_posix()
         if remote_directory == ".":
@@ -438,21 +523,10 @@ class ExplicitFTPSTransport:
         files_listed = sum(1 for line in lines if line.startswith("-"))
         files_read = 0
         for line in lines:
-            if re.fullmatch(r"total \d+", line):
+            parsed = _parse_list_line(line)
+            if parsed is None:
                 continue
-            fields = line.split(maxsplit=8)
-            if len(fields) != 9 or not re.fullmatch(
-                r"[-dl][rwxStTs-]{9}[+@.]?", fields[0]
-            ):
-                raise TransportError(f"unsupported LIST entry: {line!r}")
-            name = fields[8]
-            kind = fields[0][0]
-            if kind == "l":
-                name = name.split(" -> ", 1)[0]
-            if name in {".", ".."}:
-                continue
-            if not name or "/" in name or "\r" in name or "\n" in name:
-                raise TransportError(f"invalid name in remote listing: {name!r}")
+            name, kind = parsed
             facts = {"type": {"d": "dir", "-": "file", "l": "OS.unix=slink"}[kind]}
             if kind == "-":
                 remote_path = f"./{(directory / name).as_posix()}"
@@ -469,6 +543,11 @@ class ExplicitFTPSTransport:
         return children
 
     def _connected_client(self) -> ftplib.FTP_TLS:
+        if self._missing_root:
+            # Until the root exists, relative paths would resolve elsewhere.
+            raise TransportError(
+                f"remote root '{self.configuration.remote_root}' does not exist"
+            )
         if self._client is None:
             raise TransportError("FTPS transport is not connected")
         return self._client
@@ -568,10 +647,9 @@ class ExplicitFTPSTransport:
         for path in recovery.backups_to_remove:
             self.delete_path(path, is_directory=False)
             messages.append(f"Removed old backup '{path}'.")
-        client = self._connected_client()
         for backup, destination in recovery.backups_to_restore:
             try:
-                client.rename(backup, destination)
+                self._connected_client().rename(backup, destination)
             except ftplib.error_perm as error:
                 raise PathOperationError(
                     f"could not restore HLSync backup '{backup}' to "

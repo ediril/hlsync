@@ -946,6 +946,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
 
     class FakeTransport:
         lists_with_mlsd = True
+        missing_remote_root = False
 
         def __init__(self, profile) -> None:
             del profile
@@ -1383,12 +1384,10 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
     assert push_result[0] == 0
     assert push_result[2].startswith("Preparing push for profile 'prod'...\n")
     assert "Comparing local and remote files...\n" in push_result[2]
-    assert push_result[2].endswith(
-        "Pushing changes...\n"
-        "  + src/\n"
-        "  + src/.env.example\n"
-        "  + src/main.py\n"
-    )
+    pushed = push_result[2].split("Pushing changes...\n", 1)[1].splitlines()
+    # The folder is created first; the files finish in either order.
+    assert pushed[0] == "  + src/"
+    assert sorted(pushed[1:]) == ["  + src/.env.example", "  + src/main.py"]
     assert push_result[1] == "Push complete: 3 changes over 2 connections.\n"
     assert operations[0] == ("mkdir", "src")
     assert sorted(operations[1:]) == [
@@ -1515,6 +1514,7 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
 
     class RemoteOnlyTransport:
         lists_with_mlsd = True
+        missing_remote_root = False
 
         def __init__(self, profile):
             pass
@@ -1560,6 +1560,7 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
 
 class _ListingTransport:
     lists_with_mlsd = True
+    missing_remote_root = False
     remote: dict = {}
     listed: list = []
 
@@ -1707,6 +1708,7 @@ def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> 
 
     class ProtectedTransport:
         lists_with_mlsd = True
+        missing_remote_root = False
 
         def __init__(self, profile) -> None:
             del profile
@@ -1890,6 +1892,7 @@ def test_push_stops_at_the_first_failure_and_counts_what_did_not_start(
 
     class PartiallyWritableTransport:
         lists_with_mlsd = True
+        missing_remote_root = False
 
         def __init__(self, profile):
             pass

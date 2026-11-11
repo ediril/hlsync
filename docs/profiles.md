@@ -23,6 +23,13 @@ HLSync stores the canonical absolute local root and maps every descendant to
 the same relative path under the remote root. Roots may not overlap across
 profiles. Remapping requires confirmation and defaults to no.
 
+The remote root does not need to exist yet. `connect`, `diff`, and
+`push --dry` report `Remote root /public_html/staging does not exist yet; push
+will create it.` and treat the remote as empty, so check that path for typos.
+`push` then creates every missing folder of the root, such as both `staging/`
+and a missing parent, before uploading. A root path that exists but cannot be
+entered, such as a file or a folder without permission, still fails to connect.
+
 Use `map` to change either side after creation. Omit `--local-root` to use the
 current directory; changing only the remote root preserves the local root:
 

@@ -941,9 +941,25 @@ def _effective_current_directory(
 def _connect(arguments: argparse.Namespace, store: ConfigurationStore) -> str:
     _, name, profile = _resolve_profile(arguments, store)
     with ExplicitFTPSTransport(profile) as transport:
-        note = _slow_listing_note(transport)
-    verified = f"Verified secure connectivity to profile '{name}'."
-    return verified if note is None else f"{verified}\n{note}"
+        notes = _connection_notes(transport, profile)
+    return "\n".join(
+        (f"Verified secure connectivity to profile '{name}'.", *notes)
+    )
+
+
+def _connection_notes(
+    transport: ExplicitFTPSTransport, profile: ProfileConfiguration
+) -> tuple[str, ...]:
+    notes = []
+    if transport.missing_remote_root:
+        notes.append(
+            f"Remote root {profile.remote_root} does not exist yet; "
+            "push will create it."
+        )
+    slow = _slow_listing_note(transport)
+    if slow is not None:
+        notes.append(slow)
+    return tuple(notes)
 
 
 def _slow_listing_note(transport: ExplicitFTPSTransport) -> str | None:
@@ -961,9 +977,12 @@ def _slow_listing_note(transport: ExplicitFTPSTransport) -> str | None:
     )
 
 
-def _report_connection(transport: ExplicitFTPSTransport, progress: TextIO) -> None:
-    note = _slow_listing_note(transport)
-    if note is not None:
+def _report_connection(
+    transport: ExplicitFTPSTransport,
+    profile: ProfileConfiguration,
+    progress: TextIO,
+) -> None:
+    for note in _connection_notes(transport, profile):
         print(note, file=progress, flush=True)
 
 
@@ -1642,7 +1661,7 @@ def _list_remote(
     print(f"Listing remote files for profile '{name}'...", file=progress, flush=True)
     print("Connecting securely over FTPS...", file=progress, flush=True)
     with ExplicitFTPSTransport(profile) as transport:
-        _report_connection(transport, progress)
+        _report_connection(transport, profile, progress)
         print("Reading remote files...", file=progress, flush=True)
         with DirectoryReadProgress(progress, transient=True) as reading:
             raw_snapshot = transport.snapshot(
@@ -2482,7 +2501,7 @@ def _diff(
         ExplicitFTPSTransport(profile) as transport,
         DirectoryReadProgress(progress, transient=True) as reading,
     ):
-        _report_connection(transport, progress)
+        _report_connection(transport, profile, progress)
         print("Comparing local and remote folders...", file=progress, flush=True)
         if pending and arguments.show_all:
             for line in _scope_header_lines(
@@ -2937,7 +2956,7 @@ def _transfer(
         print(options, file=progress, flush=True)
     print("Connecting securely over FTPS...", file=progress, flush=True)
     with ExplicitFTPSTransport(profile) as transport, ExitStack() as sessions:
-        _report_connection(transport, progress)
+        _report_connection(transport, profile, progress)
         local, remote, plan = _build_plan(
             arguments,
             root,
@@ -2959,13 +2978,6 @@ def _transfer(
             if entry.path in upload_paths
         } if arguments.command == "push" else {}
         feedback = _UploadProgress(progress, uploads, dry_run=dry_run)
-        upload_sessions = (
-            _open_upload_sessions(
-                profile, arguments.jobs, len(uploads), sessions, progress
-            )
-            if uploads and not dry_run
-            else ()
-        )
         executable_actions = {
             "create-remote",
             "upload",
@@ -2973,7 +2985,20 @@ def _transfer(
             "replace-local",
             "delete-remote",
         }
-        if any(entry.action in executable_actions for entry in plan.entries):
+        has_work = any(entry.action in executable_actions for entry in plan.entries)
+        if has_work and not dry_run and transport.missing_remote_root:
+            transport.create_remote_root()
+            print(
+                f"Created remote root {profile.remote_root}.", file=progress, flush=True
+            )
+        upload_sessions = (
+            _open_upload_sessions(
+                profile, arguments.jobs, len(uploads), sessions, progress
+            )
+            if uploads and not dry_run
+            else ()
+        )
+        if has_work:
             progress_message = (
                 "Dry push..."
                 if dry_run

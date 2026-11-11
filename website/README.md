@@ -3,10 +3,11 @@
 This directory is the complete shared-hosting document root. It requires PHP
 8.3 and Apache; there is no build step or package installation.
 
-For local rendering without managing the user's application server:
+To check it locally, serve it with PHP's built-in server at
+http://localhost:8000 (pass another port as the argument):
 
 ```console
-php -S 127.0.0.1:8080 -t website
+./scripts/run_server.sh
 ```
 
 Deploy the contents of `website/`, including `.htaccess`, directly into the
