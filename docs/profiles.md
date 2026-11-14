@@ -7,8 +7,9 @@ credential environment-variable names, and one local root. Multiple
 profiles may use the same server. Credential values are never stored in
 `~/.hlsync/configs.json`.
 
-FTPS is the default and currently the only protocol. Override credential
-variable names when creating a profile if needed:
+FTPS is the default protocol; SFTP is also supported (see
+[SFTP profiles](#sftp-profiles)). Override credential variable names when
+creating a profile if needed:
 
 ```console
 hlsync create staging \
@@ -100,3 +101,32 @@ hlsync staging push templates -r
 ```
 
 No profile selection is persisted between commands.
+
+## SFTP profiles
+
+Create an SFTP profile with `--protocol sftp`. The port defaults to 22:
+
+```console
+hlsync create vm --protocol sftp --host vm.example.com -r /var/www/site
+```
+
+SFTP logs in the way `ssh` does. HLSync offers, in order, the keys in your
+ssh-agent, any `IdentityFile` that `~/.ssh/config` lists for the host, and your
+default keys in `~/.ssh` (such as `id_ed25519`). The username comes from the
+profile's username variable (`PROD_FTPS_USERNAME` by default). A password is
+optional: when the profile's password variable is set, HLSync also offers it.
+Other `~/.ssh/config` settings, such as `HostName`, `Port`, and `User`, are not
+applied; the profile records those itself.
+
+HLSync verifies the server against `~/.ssh/known_hosts` and refuses hosts that
+are missing from it or whose key changed. Before the first connection, run
+`ssh` once (for example `ssh deploy@vm.example.com`) to check and save the host
+key, then `hlsync connect`.
+
+The remote root is a path on the server's file system, such as
+`/var/www/site`, unless the server confines the account to a chroot. Everything
+else works as with FTPS: staged and verified uploads, `-j` parallel uploads
+(each one a separate SSH connection), pruning, pull, and creation of a missing
+remote root. SFTP returns every file's size and modification time in one
+listing request, so large folders list quickly.
+

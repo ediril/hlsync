@@ -23,6 +23,7 @@ from hlsync.config import (
     DEFAULT_HOST_ENV,
     DEFAULT_PASSWORD_ENV,
     DEFAULT_USERNAME_ENV,
+    PROTOCOLS,
     ApplicationConfiguration,
     CommonRuleStore,
     ConfigurationError,
@@ -54,6 +55,7 @@ from hlsync.selection import (
     FileSelectorSet,
     SelectionError,
 )
+from hlsync.sftp import SFTPTransport
 from hlsync.shell import (
     ShellSetupError,
     display_path,
@@ -74,7 +76,12 @@ from hlsync.transfer import (
     TransferResult,
     execute_transfer,
 )
-from hlsync.transport import ExplicitFTPSTransport, PathOperationError, TransportError
+from hlsync.transport import (
+    ExplicitFTPSTransport,
+    PathOperationError,
+    RemoteTransport,
+    TransportError,
+)
 
 _EntryT = TypeVar("_EntryT")
 
@@ -237,13 +244,13 @@ def _open_upload_sessions(
     files: int,
     sessions: ExitStack,
     progress: TextIO,
-) -> tuple[ExplicitFTPSTransport, ...]:
+) -> tuple[RemoteTransport, ...]:
     wanted = min(jobs, files)
-    opened: list[ExplicitFTPSTransport] = []
+    opened: list[RemoteTransport] = []
     refusal: TransportError | None = None
     for _ in range(wanted - 1):
         try:
-            opened.append(sessions.enter_context(ExplicitFTPSTransport(profile)))
+            opened.append(sessions.enter_context(_open_transport(profile)))
         except TransportError as error:
             refusal = error
             break
@@ -260,6 +267,16 @@ def _open_upload_sessions(
         message = f"Using {connections} {noun}."
     print(message, file=progress, flush=True)
     return tuple(opened)
+
+
+def _open_transport(profile: ProfileConfiguration) -> RemoteTransport:
+    if profile.type == "sftp":
+        return SFTPTransport(profile)
+    return ExplicitFTPSTransport(profile)
+
+
+def _connecting(profile: ProfileConfiguration) -> str:
+    return f"Connecting securely over {profile.type.upper()}..."
 
 
 def _add_include_excluded_argument(parser: argparse.ArgumentParser) -> None:
@@ -366,7 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hlsync",
         description=(
-            "Transfer mapped files over explicit FTP over TLS. Run commands "
+            "Transfer mapped files over FTPS or SFTP. Run commands "
             "inside a mapped profile; prefix a command with a profile only for "
             "a one-command override. Commands may be shortened to any unique "
             "prefix."
@@ -382,27 +399,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     create_parser = subparsers.add_parser(
         "create",
-        help="create an FTPS profile with a mapped local root",
+        help="create an FTPS or SFTP profile with a mapped local root",
         description=(
-            "Create an FTPS profile using environment-variable credentials. "
-            "Without --local-root, choose the current or another directory."
+            "Create a profile using environment-variable credentials; SFTP "
+            "also uses your SSH keys. Without --local-root, choose the current "
+            "or another directory."
         ),
     )
     create_parser.add_argument("profile_name", help="new profile name")
     create_parser.add_argument(
-        "--host", help=f"FTPS server host (default: ${DEFAULT_HOST_ENV})"
+        "--host", help=f"server host (default: ${DEFAULT_HOST_ENV})"
     )
     create_parser.add_argument(
         "-r", "--remote-root", required=True, help="absolute server directory"
     )
     create_parser.add_argument(
         "--protocol",
-        choices=("ftps",),
+        choices=tuple(PROTOCOLS),
         default="ftps",
         help="transfer protocol (default: ftps)",
     )
     create_parser.add_argument(
-        "--port", type=int, default=21, help="server port (default: 21)"
+        "--port", type=int, help="server port (default: 21 for FTPS, 22 for SFTP)"
     )
     create_parser.add_argument(
         "--username-env",
@@ -423,10 +441,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     connect_parser = subparsers.add_parser(
         "connect",
-        help="verify a profile's FTPS connection",
+        help="verify a profile's connection",
         usage="hlsync connect [PROFILE]\n       hlsync PROFILE connect",
         description=(
-            "Check secure FTPS connectivity, then disconnect. Infer the profile "
+            "Check the secure connection, then disconnect. Infer the profile "
             "from the current directory unless named."
         ),
     )
@@ -659,7 +677,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument(
         "--remote",
         action="store_true",
-        help="list the mapped remote directory over FTPS",
+        help="list the mapped remote directory",
     )
     list_parser.add_argument(
         "-r",
@@ -865,7 +883,7 @@ def _create_profile(
         type=arguments.protocol,
         host=host,
         remote_root=arguments.remote_root,
-        port=arguments.port,
+        port=arguments.port or PROTOCOLS[arguments.protocol],
         username_env=(
             arguments.username_env
             if arguments.username_env is not None
@@ -906,7 +924,7 @@ def _create_profile(
     )
     source = "" if arguments.host else f" on {host} (from {DEFAULT_HOST_ENV})"
     message = (
-        f"Created FTPS profile '{name}'{source}.\n"
+        f"Created {profile.type.upper()} profile '{name}'{source}.\n"
         f"Mapped '{local_root}' to '{name}:{profile.remote_root}'."
     )
     _common_rule_store(store).load()
@@ -982,7 +1000,7 @@ def _effective_current_directory(
 
 def _connect(arguments: argparse.Namespace, store: ConfigurationStore) -> str:
     _, name, profile = _resolve_profile(arguments, store)
-    with ExplicitFTPSTransport(profile) as transport:
+    with _open_transport(profile) as transport:
         notes = _connection_notes(transport, profile)
     return "\n".join(
         (f"Verified secure connectivity to profile '{name}'.", *notes)
@@ -990,7 +1008,7 @@ def _connect(arguments: argparse.Namespace, store: ConfigurationStore) -> str:
 
 
 def _connection_notes(
-    transport: ExplicitFTPSTransport, profile: ProfileConfiguration
+    transport: RemoteTransport, profile: ProfileConfiguration
 ) -> tuple[str, ...]:
     notes = []
     if transport.missing_remote_root:
@@ -1004,13 +1022,14 @@ def _connection_notes(
     return tuple(notes)
 
 
-def _slow_listing_note(transport: ExplicitFTPSTransport) -> str | None:
-    if transport.lists_with_mlsd:
+def _slow_listing_note(transport: RemoteTransport) -> str | None:
+    if not transport.reads_file_metadata_separately:
         return None
-    if transport.vsftpd:
+    if transport.server_software is not None:
         return (
-            "Your FTP server (vsFTPd) lists large folders slowly because it has "
-            "no MLSD.\n  Consider a host running ProFTPD or Pure-FTPd, which list "
+            f"Your FTP server ({transport.server_software}) lists large folders "
+            "slowly because it has no MLSD.\n"
+            "  Consider a host running ProFTPD or Pure-FTPd, which list "
             "whole folders at once."
         )
     return (
@@ -1020,7 +1039,7 @@ def _slow_listing_note(transport: ExplicitFTPSTransport) -> str | None:
 
 
 def _report_connection(
-    transport: ExplicitFTPSTransport,
+    transport: RemoteTransport,
     profile: ProfileConfiguration,
     progress: TextIO,
 ) -> None:
@@ -1718,8 +1737,8 @@ def _list_remote(
     selector = _list_selection(arguments, root)
     rules = _effective_rules(store, profile)
     print(f"Listing remote files for profile '{name}'...", file=progress, flush=True)
-    print("Connecting securely over FTPS...", file=progress, flush=True)
-    with ExplicitFTPSTransport(profile) as transport:
+    print(_connecting(profile), file=progress, flush=True)
+    with _open_transport(profile) as transport:
         _report_connection(transport, profile, progress)
         print("Reading remote files...", file=progress, flush=True)
         with DirectoryReadProgress(progress, transient=True) as reading:
@@ -2407,7 +2426,7 @@ def _resume_command(arguments: argparse.Namespace, directory: PurePosixPath) -> 
 def _build_plan(
     arguments: argparse.Namespace,
     root: Path,
-    transport: ExplicitFTPSTransport,
+    transport: RemoteTransport,
     rules: RuleSet,
     *,
     direction: str,
@@ -2431,7 +2450,7 @@ def _build_plan(
         respect_remote_boundaries=True,
         directory_progress=report_local_directory,
     )
-    print("Reading remote files over FTPS...", file=progress, flush=True)
+    print("Reading remote files...", file=progress, flush=True)
 
     with DirectoryReadProgress(progress) as reading:
         artifact_options: dict[str, Callable[[str], None]] = {}
@@ -2493,7 +2512,7 @@ def _diff(
     options = _active_options(arguments)
     if options is not None:
         print(options, file=progress, flush=True)
-    print("Connecting securely over FTPS...", file=progress, flush=True)
+    print(_connecting(profile), file=progress, flush=True)
     traversal_roots = _diff_traversal_roots(arguments, root)
     if resume is not None:
         root_index = next(
@@ -2557,7 +2576,7 @@ def _diff(
         )
 
     with (
-        ExplicitFTPSTransport(profile) as transport,
+        _open_transport(profile) as transport,
         DirectoryReadProgress(progress, transient=True) as reading,
     ):
         _report_connection(transport, profile, progress)
@@ -3013,8 +3032,8 @@ def _transfer(
     options = _active_options(arguments)
     if options is not None:
         print(options, file=progress, flush=True)
-    print("Connecting securely over FTPS...", file=progress, flush=True)
-    with ExplicitFTPSTransport(profile) as transport, ExitStack() as sessions:
+    print(_connecting(profile), file=progress, flush=True)
+    with _open_transport(profile) as transport, ExitStack() as sessions:
         _report_connection(transport, profile, progress)
         local, remote, plan = _build_plan(
             arguments,

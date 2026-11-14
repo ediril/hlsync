@@ -4,12 +4,14 @@ import ftplib
 import os
 import re
 import ssl
+from abc import ABC, abstractmethod
 from calendar import timegm
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import BinaryIO, Protocol
+from typing import BinaryIO
 from uuid import uuid4
 
 from hlsync.config import ProfileConfiguration
@@ -23,7 +25,7 @@ class TransportError(RuntimeError):
 
 
 class PathOperationError(TransportError):
-    """Raised when one remote path fails but the FTPS session remains usable."""
+    """Raised when one remote path fails but the session remains usable."""
 
 
 _HLSYNC_ARTIFACT_NAME = re.compile(
@@ -119,183 +121,143 @@ def _relative_remote_path(value: str) -> str:
     return path.as_posix()
 
 
-class RemoteTransport(Protocol):
-    def connect(self) -> None: ...
-
-    def snapshot(
-        self,
-        rules: RuleSet,
-        selector: FileSelection | None = None,
-        *,
-        include_excluded: bool = False,
-        traverse_excluded: bool = False,
-        artifact_recovery: Callable[[str], None] | None = None,
-        artifact_preview: Callable[[str], None] | None = None,
-        directory_progress: Callable[[PurePosixPath], None] | None = None,
-        directory_counts: Callable[[int, int], None] | None = None,
-    ) -> TreeSnapshot: ...
-
-    def list_directory(
-        self,
-        relative_directory: PurePosixPath,
-        rules: RuleSet,
-    ) -> TreeSnapshot: ...
-
-    def make_directory(self, relative_path: str) -> None: ...
-
-    def upload_file(
-        self,
-        local_path: BinaryIO,
-        relative_path: str,
-        *,
-        size: int,
-        modified_ns: int,
-        replace: bool,
-        byte_progress: Callable[[int], None] | None = None,
-    ) -> None: ...
-
-    def download_file(self, relative_path: str, destination: BinaryIO) -> None: ...
-
-    def delete_path(self, relative_path: str, *, is_directory: bool) -> None: ...
-
-    def close(self) -> None: ...
+def _format_utc(seconds: int) -> str:
+    return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y%m%d%H%M%S")
 
 
-@dataclass
-class ExplicitFTPSTransport:
+@dataclass(frozen=True)
+class RemoteChild:
+    """One entry of a remote folder listing, before rules are applied."""
+
+    name: str
+    kind: EntryKind
+    size: int | None = None
+    modified_ns: int | None = None
+    precision_ns: int | None = None
+
+
+class RemoteTransport(ABC):
+    """Protocol-independent remote tree, staged installation, and recovery.
+
+    Subclasses connect and supply primitive operations on paths relative to the
+    remote root; every guarantee built on those primitives lives here: the
+    selected walk, artifact recovery, verified staging, and backed-up
+    replacement.
+    """
+
+    protocol_name = "remote"
+    # Whether each file's size and time need separate requests while listing.
+    reads_file_metadata_separately = False
+    # Server software worth naming to the user, when it limits listing speed.
+    server_software: str | None = None
+
     configuration: ProfileConfiguration
-    timeout: float = 30.0
-    ssl_context: ssl.SSLContext | None = None
 
     def __post_init__(self) -> None:
-        self._client: ftplib.FTP_TLS | None = None
-        self.lists_with_mlsd = True
-        self.vsftpd = False
         # Folders of the remote root that do not exist yet, outermost first.
         self._missing_root: tuple[str, ...] = ()
-        self._timestamp_command = "MFMT"
 
-    def connect(self) -> None:
-        username = os.environ.get(self.configuration.username_env)
-        password = os.environ.get(self.configuration.password_env)
-        missing = [
-            name
-            for name, value in (
-                (self.configuration.username_env, username),
-                (self.configuration.password_env, password),
-            )
-            if value is None
-        ]
-        if missing:
-            raise TransportError(
-                f"missing credential environment variable(s): {', '.join(missing)}"
-            )
+    # -- connection and primitives supplied by each protocol ----------------
 
-        client = ftplib.FTP_TLS(
-            context=self.ssl_context or ssl.create_default_context(),
-            timeout=self.timeout,
-        )
-        try:
-            client.connect(self.configuration.host, self.configuration.port)
-            client.auth()
-            client.login(username, password)
-            client.prot_p()
-            features = client.sendcmd("FEAT")
-            advertised = {
-                line.strip().upper().split(" ", 1)[0]
-                for line in features.splitlines()
-            }
-            self.vsftpd = "vsftpd" in client.getwelcome().lower()
-            self._timestamp_command = (
-                "MDTM" if "MFMT" not in advertised and self.vsftpd else "MFMT"
-            )
-            self.lists_with_mlsd = any(
-                line.strip().upper().split(" ", 1)[0] in {"MLST", "MLSD"}
-                for line in features.splitlines()
-            )
-            try:
-                client.cwd(self.configuration.remote_root)
-            except ftplib.error_perm as error:
-                self._missing_root = self._find_missing_root(client, error)
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            try:
-                client.close()
-            finally:
-                raise TransportError(
-                    f"could not open explicit FTPS profile at "
-                    f"{self.configuration.host}:{self.configuration.port}"
-                    f"{self.configuration.remote_root}: {error}"
-                ) from error
-        self._client = client
+    @abstractmethod
+    def connect(self) -> None: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+    @property
+    @abstractmethod
+    def _connected(self) -> bool: ...
+
+    @abstractmethod
+    def _failure(
+        self, description: str, *, hint: str = ""
+    ) -> AbstractContextManager[None]:
+        """Convert protocol errors into PathOperationError or TransportError."""
+
+    @abstractmethod
+    def _list_children(
+        self,
+        directory: PurePosixPath,
+        file_progress: Callable[[int, int], None] | None,
+    ) -> list[RemoteChild]: ...
+
+    @abstractmethod
+    def _store(
+        self, path: str, source: BinaryIO, progress: Callable[[int], None] | None
+    ) -> None: ...
+
+    @abstractmethod
+    def _size(self, path: str) -> int: ...
+
+    @abstractmethod
+    def _set_modified(self, path: str, seconds: int) -> None: ...
+
+    @abstractmethod
+    def _read_modified(self, path: str) -> tuple[int, int]:
+        """Return (modified_ns, precision_ns) as the server reports them."""
+
+    @abstractmethod
+    def _rename(self, source: str, destination: str) -> None: ...
+
+    @abstractmethod
+    def _delete_file(self, path: str) -> None: ...
+
+    @abstractmethod
+    def _make_dir(self, path: str) -> None: ...
+
+    @abstractmethod
+    def _remove_dir(self, path: str) -> None: ...
+
+    @abstractmethod
+    def _retrieve(self, path: str, destination: BinaryIO) -> None: ...
+
+    @abstractmethod
+    def _make_absolute_directory(self, path: str) -> None: ...
+
+    @abstractmethod
+    def _enter_root(self) -> None: ...
+
+    def _stage(self, step: str) -> str:
+        return {
+            "store": "upload staging file",
+            "size": "verify upload size",
+            "set_time": "set timestamp",
+            "read_time": "verify timestamp",
+        }[step]
+
+    @property
+    def _timestamp_hint(self) -> str:
+        return ""
+
+    # -- shared protocol -----------------------------------------------------
 
     @property
     def missing_remote_root(self) -> bool:
         return bool(self._missing_root)
 
-    def _find_missing_root(
-        self, client: ftplib.FTP_TLS, refusal: ftplib.error_perm
-    ) -> tuple[str, ...]:
-        """Return the absent folders of the remote root, outermost first.
-
-        The nearest enterable ancestor must list no entry for the next folder;
-        an entry there that cannot be entered keeps the original refusal.
-        """
-        root = PurePosixPath(self.configuration.remote_root)
-        for ancestor in root.parents:
-            try:
-                client.cwd(ancestor.as_posix())
-            except ftplib.error_perm:
-                continue
-            missing = root.parts[len(ancestor.parts):]
-            if missing[0] in self._names_in_working_directory(client):
-                raise refusal
-            return missing
-        raise refusal
-
-    def _names_in_working_directory(self, client: ftplib.FTP_TLS) -> set[str]:
-        if self.lists_with_mlsd:
-            return {name for name, _ in client.mlsd(facts=["type"])}
-        lines: list[str] = []
-        client.retrlines("LIST -a", lines.append)
-        return {
-            parsed[0] for parsed in map(_parse_list_line, lines) if parsed is not None
-        }
+    def _ready(self) -> None:
+        if self._missing_root:
+            # Until the root exists, relative paths would resolve elsewhere.
+            raise TransportError(
+                f"remote root '{self.configuration.remote_root}' does not exist"
+            )
+        if not self._connected:
+            raise TransportError(f"{self.protocol_name} transport is not connected")
 
     def create_remote_root(self) -> None:
         """Create each missing folder of the remote root, then enter it."""
-        client = self._client
-        if client is None:
-            raise TransportError("FTPS transport is not connected")
+        if not self._connected:
+            raise TransportError(f"{self.protocol_name} transport is not connected")
         root = PurePosixPath(self.configuration.remote_root)
         folder = PurePosixPath(*root.parts[: len(root.parts) - len(self._missing_root)])
         for name in self._missing_root:
             folder /= name
-            try:
-                client.mkd(folder.as_posix())
-            except ftplib.error_perm as error:
-                raise PathOperationError(
-                    f"could not create remote root folder '{folder}': {error}"
-                ) from error
-            except (OSError, ftplib.Error, ssl.SSLError) as error:
-                raise TransportError(
-                    f"could not create remote root folder '{folder}': {error}"
-                ) from error
-        try:
-            client.cwd(root.as_posix())
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            raise TransportError(
-                f"could not enter created remote root '{root}': {error}"
-            ) from error
+            with self._failure(f"create remote root folder '{folder}'"):
+                self._make_absolute_directory(folder.as_posix())
+        with self._failure(f"enter created remote root '{root}'"):
+            self._enter_root()
         self._missing_root = ()
-
-    def close(self) -> None:
-        if self._client is None:
-            return
-        client, self._client = self._client, None
-        try:
-            client.quit()
-        except (OSError, ftplib.Error):
-            client.close()
 
     def snapshot(
         self,
@@ -310,8 +272,8 @@ class ExplicitFTPSTransport:
         directory_counts: Callable[[int, int], None] | None = None,
         file_progress: Callable[[int, int], None] | None = None,
     ) -> TreeSnapshot:
-        if self._client is None:
-            raise TransportError("FTPS transport is not connected")
+        if not self._connected:
+            raise TransportError(f"{self.protocol_name} transport is not connected")
         entries: list[TreeEntry] = []
         listed_directories: set[str] = set()
         completed_directories = 0
@@ -392,101 +354,40 @@ class ExplicitFTPSTransport:
         *,
         file_progress: Callable[[int, int], None] | None = None,
     ) -> TreeSnapshot:
-        """Normalize the negotiated listing format into shared tree metadata.
+        """List one folder as tree entries with local and remote exclusions.
 
-        Without MLSD, each file needs its own metadata requests; file_progress
-        receives (files read, files listed) after each one.
+        When a server needs separate requests per file, file_progress receives
+        (files read, files listed) after each one.
         """
         if self._missing_root:
             return TreeSnapshot()
-        client = self._connected_client()
-        remote_directory = relative_directory.as_posix()
-        if remote_directory == ".":
-            remote_directory = ""
-        try:
+        self._ready()
+        display = relative_directory.as_posix()
+        with self._failure(f"list remote directory '{display}'"):
             children = sorted(
-                client.mlsd(
-                    remote_directory,
-                    facts=["type", "size", "modify"],
-                )
-                if self.lists_with_mlsd
-                else self._list_facts(relative_directory, file_progress),
-                key=lambda item: item[0],
+                self._list_children(relative_directory, file_progress),
+                key=lambda child: child.name,
             )
-        except ftplib.error_perm as error:
-            display_path = remote_directory or "."
-            raise PathOperationError(
-                f"could not list remote directory '{display_path}': {error}"
-            ) from error
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            display_path = remote_directory or "."
-            raise TransportError(
-                f"could not list remote directory '{display_path}': {error}"
-            ) from error
-
         entries: list[TreeEntry] = []
-        for name, facts in children:
-            entry_type = facts.get("type", "").lower()
-            if entry_type in {"cdir", "pdir"}:
-                continue
-            if not name or "/" in name or name in {".", ".."}:
-                raise TransportError(f"invalid name in remote listing: {name!r}")
-            relative_path = (relative_directory / name).as_posix()
-            if entry_type == "dir":
-                kind: EntryKind = "directory"
-            elif entry_type == "file":
-                kind = "file"
-            elif entry_type.startswith("os.unix=slink"):
-                kind = "symlink"
-            else:
-                raise TransportError(
-                    f"unsupported remote entry type {entry_type!r} "
-                    f"for '{relative_path}'"
-                )
+        for child in children:
+            if not child.name or "/" in child.name or child.name in {".", ".."}:
+                raise TransportError(f"invalid name in remote listing: {child.name!r}")
+            relative_path = (relative_directory / child.name).as_posix()
+            directory = child.kind == "directory"
             excluded = rules.excludes(
-                relative_path,
-                target="local",
-                is_directory=kind == "directory",
+                relative_path, target="local", is_directory=directory
             )
             remote_excluded = rules.excludes(
-                relative_path,
-                target="remote",
-                is_directory=kind == "directory",
-            )
-            if kind != "file":
-                entries.append(
-                    TreeEntry(
-                        relative_path,
-                        kind,
-                        excluded=excluded,
-                        remote_excluded=remote_excluded,
-                    )
-                )
-                continue
-            size_value = facts.get("size")
-            modified_value = facts.get("modify")
-            if size_value is None or modified_value is None:
-                raise TransportError(
-                    f"remote file metadata is incomplete for '{relative_path}'"
-                )
-            try:
-                size = int(size_value)
-            except ValueError as error:
-                raise TransportError(
-                    f"invalid MLSD size {size_value!r} for '{relative_path}'"
-                ) from error
-            modified_ns, precision_ns = _parse_mlsd_modify(
-                modified_value,
-                relative_path,
+                relative_path, target="remote", is_directory=directory
             )
             try:
                 entries.append(
                     TreeEntry(
                         relative_path,
-                        kind,
-                        size=size,
-                        modified_ns=modified_ns,
-                        timestamp_precision_ns=precision_ns,
+                        child.kind,
+                        size=child.size,
+                        modified_ns=child.modified_ns,
+                        timestamp_precision_ns=child.precision_ns,
                         excluded=excluded,
                         remote_excluded=remote_excluded,
                     )
@@ -497,73 +398,11 @@ class ExplicitFTPSTransport:
                 ) from error
         return TreeSnapshot(tuple(entries))
 
-    def _list_facts(
-        self,
-        directory: PurePosixPath,
-        file_progress: Callable[[int, int], None] | None,
-    ) -> list[tuple[str, dict[str, str]]]:
-        client = self._connected_client()
-        lines: list[str] = []
-        # Keep options separate from paths; servers disagree on LIST -a PATH.
-        previous = client.pwd()
-        client.cwd(f"./{directory.as_posix()}")
-        try:
-            client.retrlines("LIST -a", lines.append)
-        finally:
-            try:
-                client.cwd(previous)
-            except (OSError, ftplib.Error) as error:
-                client.close()
-                self._client = None
-                raise TransportError(
-                    "could not restore remote working directory"
-                ) from error
-        children: list[tuple[str, dict[str, str]]] = []
-        client.voidcmd("TYPE I")
-        files_listed = sum(1 for line in lines if line.startswith("-"))
-        files_read = 0
-        for line in lines:
-            parsed = _parse_list_line(line)
-            if parsed is None:
-                continue
-            name, kind = parsed
-            facts = {"type": {"d": "dir", "-": "file", "l": "OS.unix=slink"}[kind]}
-            if kind == "-":
-                remote_path = f"./{(directory / name).as_posix()}"
-                size = client.size(remote_path)
-                if size is None:
-                    raise TransportError(f"missing remote size for '{name}'")
-                response = client.sendcmd(f"MDTM {remote_path}")
-                _parse_mdtm_response(response, remote_path)
-                facts.update(size=str(size), modify=response.partition(" ")[2].strip())
-                files_read += 1
-                if file_progress is not None:
-                    file_progress(files_read, files_listed)
-            children.append((name, facts))
-        return children
-
-    def _connected_client(self) -> ftplib.FTP_TLS:
-        if self._missing_root:
-            # Until the root exists, relative paths would resolve elsewhere.
-            raise TransportError(
-                f"remote root '{self.configuration.remote_root}' does not exist"
-            )
-        if self._client is None:
-            raise TransportError("FTPS transport is not connected")
-        return self._client
-
     def make_directory(self, relative_path: str) -> None:
         path = _relative_remote_path(relative_path)
-        try:
-            self._connected_client().mkd(path)
-        except ftplib.error_perm as error:
-            raise PathOperationError(
-                f"could not create remote directory '{path}': {error}"
-            ) from error
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            raise TransportError(
-                f"could not create remote directory '{path}': {error}"
-            ) from error
+        self._ready()
+        with self._failure(f"create remote directory '{path}'"):
+            self._make_dir(path)
 
     def _plan_artifact_recovery(
         self,
@@ -648,21 +487,12 @@ class ExplicitFTPSTransport:
             self.delete_path(path, is_directory=False)
             messages.append(f"Removed old backup '{path}'.")
         for backup, destination in recovery.backups_to_restore:
-            try:
-                self._connected_client().rename(backup, destination)
-            except ftplib.error_perm as error:
-                raise PathOperationError(
-                    f"could not restore HLSync backup '{backup}' to "
-                    f"'{destination}': {error}"
-                ) from error
-            except (OSError, ftplib.Error, ssl.SSLError) as error:
-                raise TransportError(
-                    f"could not restore HLSync backup '{backup}' to "
-                    f"'{destination}': {error}"
-                ) from error
-            messages.append(
-                f"Restored interrupted replacement '{destination}'."
-            )
+            self._ready()
+            with self._failure(
+                f"restore HLSync backup '{backup}' to '{destination}'"
+            ):
+                self._rename(backup, destination)
+            messages.append(f"Restored interrupted replacement '{destination}'.")
         return tuple(messages)
 
     def upload_file(
@@ -675,67 +505,53 @@ class ExplicitFTPSTransport:
         replace: bool,
         byte_progress: Callable[[int], None] | None = None,
     ) -> None:
+        """Stage beside the destination, verify size and time, then install.
+
+        A replaced file is renamed to a backup first and restored if the
+        installation rename fails.
+        """
         path = _relative_remote_path(relative_path)
+        self._ready()
         remote = PurePosixPath(path)
         token = uuid4().hex
         temporary = str(remote.with_name(f".{remote.name}.hlsync-upload-{token}"))
         backup = str(remote.with_name(f".{remote.name}.hlsync-backup-{token}"))
-        client = self._connected_client()
-        timestamp = datetime.fromtimestamp(
-            modified_ns // 1_000_000_000,
-            tz=UTC,
-        ).strftime("%Y%m%d%H%M%S")
+        seconds = modified_ns // 1_000_000_000
 
         def discard(candidate: str) -> None:
             try:
-                client.delete(candidate)
-            except (OSError, ftplib.Error):
+                with self._failure(f"discard '{candidate}'"):
+                    self._delete_file(candidate)
+            except TransportError:
                 pass
 
-        stage = "upload staging file (STOR)"
         try:
-            callback = (
-                (lambda block: byte_progress(len(block)))
-                if byte_progress is not None else None
-            )
-            client.storbinary(f"STOR {temporary}", local_path, callback=callback)
-            stage = "verify upload size (SIZE)"
-            uploaded_size = client.size(temporary)
+            with self._failure(f"{self._stage('store')} for '{path}'"):
+                self._store(temporary, local_path, byte_progress)
+            with self._failure(f"{self._stage('size')} for '{path}'"):
+                uploaded_size = self._size(temporary)
             if uploaded_size != size:
                 raise TransportError(
                     f"remote upload size mismatch for '{path}': "
                     f"expected {size}, got {uploaded_size}"
                 )
-            stage = f"set timestamp ({self._timestamp_command})"
-            response = client.sendcmd(
-                f"{self._timestamp_command} {timestamp} {temporary}"
-            )
-            if len(response) < 3 or not response[:3].isdigit() or response[0] != "2":
-                raise TransportError(
-                    f"remote server did not accept modification time for "
-                    f"'{path}': {response}"
+            with self._failure(
+                f"{self._stage('set_time')} for '{path}'", hint=self._timestamp_hint
+            ):
+                self._set_modified(temporary, seconds)
+            with self._failure(f"{self._stage('read_time')} for '{path}'"):
+                remote_modified_ns, remote_precision_ns = self._read_modified(
+                    temporary
                 )
-            stage = "verify timestamp (MDTM)"
-            verification = client.sendcmd(f"MDTM {temporary}")
-            remote_modified_ns, remote_precision_ns = _parse_mdtm_response(
-                verification,
-                path,
-            )
-            expected_modified_ns = (
-                modified_ns // 1_000_000_000 * 1_000_000_000
-            )
-            comparison_precision_ns = max(
-                remote_precision_ns,
-                1_000_000_000,
-            )
+            precision_ns = max(remote_precision_ns, 1_000_000_000)
             if (
-                remote_modified_ns // comparison_precision_ns
-                != expected_modified_ns // comparison_precision_ns
+                remote_modified_ns // precision_ns
+                != seconds * 1_000_000_000 // precision_ns
             ):
                 raise TransportError(
                     f"remote modification time verification failed for "
-                    f"'{path}': expected {timestamp}, got "
-                    f"{verification.partition(' ')[2]}"
+                    f"'{path}': expected {_format_utc(seconds)}, got "
+                    f"{_format_utc(remote_modified_ns // 1_000_000_000)}"
                 )
             current_source = os.fstat(local_path.fileno())
             if (
@@ -748,114 +564,349 @@ class ExplicitFTPSTransport:
         except TransportError:
             discard(temporary)
             raise
-        except ftplib.error_perm as error:
-            discard(temporary)
-            hint = (
-                " Check mdtm_write and file permissions on the FTP server."
-                if stage == "set timestamp (MDTM)"
-                else ""
-            )
-            raise PathOperationError(
-                f"could not {stage} for '{path}': {error}.{hint}"
-            ) from error
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            discard(temporary)
-            raise TransportError(
-                f"could not {stage} for '{path}': {error}"
-            ) from error
 
+        install = f"install remote file '{path}'"
         if not replace:
             try:
-                client.rename(temporary, path)
-            except ftplib.error_perm as error:
+                with self._failure(install):
+                    self._rename(temporary, path)
+            except TransportError:
                 discard(temporary)
-                raise PathOperationError(
-                    f"could not install remote file '{path}': {error}"
-                ) from error
-            except (OSError, ftplib.Error, ssl.SSLError) as error:
-                discard(temporary)
-                raise TransportError(
-                    f"could not install remote file '{path}': {error}"
-                ) from error
+                raise
             return
 
         try:
-            client.rename(path, backup)
-        except ftplib.error_perm as error:
+            with self._failure(f"stage replacement of remote file '{path}'"):
+                self._rename(path, backup)
+        except TransportError:
             discard(temporary)
-            raise PathOperationError(
-                f"could not stage replacement of remote file '{path}': {error}"
-            ) from error
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            discard(temporary)
-            raise TransportError(
-                f"could not stage replacement of remote file '{path}': {error}"
-            ) from error
+            raise
         try:
-            client.rename(temporary, path)
-        except ftplib.error_perm as error:
+            with self._failure(install):
+                self._rename(temporary, path)
+        except TransportError as error:
             discard(temporary)
             try:
-                client.rename(backup, path)
-            except (OSError, ftplib.Error, ssl.SSLError) as restore_error:
-                raise TransportError(
-                    f"could not install remote file '{path}' and could not "
-                    f"restore its backup '{backup}': {restore_error}"
-                ) from error
-            raise PathOperationError(
-                f"could not install remote file '{path}'; its prior version "
-                f"was restored: {error}"
-            ) from error
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            discard(temporary)
-            try:
-                client.rename(backup, path)
-            except (OSError, ftplib.Error, ssl.SSLError) as restore_error:
-                raise TransportError(
-                    f"could not install remote file '{path}' and could not "
-                    f"restore its backup '{backup}': {restore_error}"
-                ) from error
-            raise TransportError(
-                f"could not install remote file '{path}'; its prior version "
-                f"was restored: {error}"
-            ) from error
+                with self._failure(f"restore its backup '{backup}'"):
+                    self._rename(backup, path)
+            except TransportError as restore_error:
+                raise TransportError(f"{error}; {restore_error}") from error
+            raise type(error)(f"{error}; its prior version was restored") from error
         try:
-            client.delete(backup)
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
+            with self._failure(f"remove backup '{backup}'"):
+                self._delete_file(backup)
+        except TransportError as error:
             raise TransportError(
-                f"installed remote file '{path}' but could not remove backup "
-                f"'{backup}': {error}"
+                f"installed remote file '{path}', but {error}"
             ) from error
 
     def download_file(self, relative_path: str, destination: BinaryIO) -> None:
         path = _relative_remote_path(relative_path)
-        try:
-            self._connected_client().retrbinary(f"RETR {path}", destination.write)
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            raise TransportError(
-                f"could not download remote file '{path}': {error}"
-            ) from error
+        self._ready()
+        with self._failure(f"download remote file '{path}'"):
+            self._retrieve(path, destination)
 
     def delete_path(self, relative_path: str, *, is_directory: bool) -> None:
         path = _relative_remote_path(relative_path)
-        try:
-            client = self._connected_client()
+        self._ready()
+        with self._failure(f"delete remote path '{path}'"):
             if is_directory:
-                client.rmd(path)
+                self._remove_dir(path)
             else:
-                client.delete(path)
-        except ftplib.error_perm as error:
-            raise PathOperationError(
-                f"could not delete remote path '{path}': {error}"
-            ) from error
-        except (OSError, ftplib.Error, ssl.SSLError) as error:
-            raise TransportError(
-                f"could not delete remote path '{path}': {error}"
-            ) from error
+                self._delete_file(path)
 
-    def __enter__(self) -> ExplicitFTPSTransport:
+    def __enter__(self) -> RemoteTransport:
         self.connect()
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+@dataclass
+class ExplicitFTPSTransport(RemoteTransport):
+    configuration: ProfileConfiguration
+    timeout: float = 30.0
+    ssl_context: ssl.SSLContext | None = None
+
+    protocol_name = "FTPS"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self._client: ftplib.FTP_TLS | None = None
+        self.lists_with_mlsd = True
+        self.vsftpd = False
+        self._timestamp_command = "MFMT"
+
+    @property
+    def reads_file_metadata_separately(self) -> bool:  # type: ignore[override]
+        return not self.lists_with_mlsd
+
+    @property
+    def server_software(self) -> str | None:  # type: ignore[override]
+        return "vsFTPd" if self.vsftpd else None
+
+    @property
+    def _connected(self) -> bool:
+        return self._client is not None
+
+    def connect(self) -> None:
+        username = os.environ.get(self.configuration.username_env)
+        password = os.environ.get(self.configuration.password_env)
+        missing = [
+            name
+            for name, value in (
+                (self.configuration.username_env, username),
+                (self.configuration.password_env, password),
+            )
+            if value is None
+        ]
+        if missing:
+            raise TransportError(
+                f"missing credential environment variable(s): {', '.join(missing)}"
+            )
+
+        client = ftplib.FTP_TLS(
+            context=self.ssl_context or ssl.create_default_context(),
+            timeout=self.timeout,
+        )
+        try:
+            client.connect(self.configuration.host, self.configuration.port)
+            client.auth()
+            client.login(username, password)
+            client.prot_p()
+            features = client.sendcmd("FEAT")
+            advertised = {
+                line.strip().upper().split(" ", 1)[0]
+                for line in features.splitlines()
+            }
+            self.vsftpd = "vsftpd" in client.getwelcome().lower()
+            self._timestamp_command = (
+                "MDTM" if "MFMT" not in advertised and self.vsftpd else "MFMT"
+            )
+            self.lists_with_mlsd = any(
+                line.strip().upper().split(" ", 1)[0] in {"MLST", "MLSD"}
+                for line in features.splitlines()
+            )
+            try:
+                client.cwd(self.configuration.remote_root)
+            except ftplib.error_perm as error:
+                self._missing_root = self._find_missing_root(client, error)
+        except (OSError, ftplib.Error, ssl.SSLError) as error:
+            try:
+                client.close()
+            finally:
+                raise TransportError(
+                    f"could not open explicit FTPS profile at "
+                    f"{self.configuration.host}:{self.configuration.port}"
+                    f"{self.configuration.remote_root}: {error}"
+                ) from error
+        self._client = client
+
+    def _find_missing_root(
+        self, client: ftplib.FTP_TLS, refusal: ftplib.error_perm
+    ) -> tuple[str, ...]:
+        """Return the absent folders of the remote root, outermost first.
+
+        The nearest enterable ancestor must list no entry for the next folder;
+        an entry there that cannot be entered keeps the original refusal.
+        """
+        root = PurePosixPath(self.configuration.remote_root)
+        for ancestor in root.parents:
+            try:
+                client.cwd(ancestor.as_posix())
+            except ftplib.error_perm:
+                continue
+            missing = root.parts[len(ancestor.parts):]
+            if missing[0] in self._names_in_working_directory(client):
+                raise refusal
+            return missing
+        raise refusal
+
+    def _names_in_working_directory(self, client: ftplib.FTP_TLS) -> set[str]:
+        if self.lists_with_mlsd:
+            return {name for name, _ in client.mlsd(facts=["type"])}
+        lines: list[str] = []
+        client.retrlines("LIST -a", lines.append)
+        return {
+            parsed[0] for parsed in map(_parse_list_line, lines) if parsed is not None
+        }
+
+    def close(self) -> None:
+        if self._client is None:
+            return
+        client, self._client = self._client, None
+        try:
+            client.quit()
+        except (OSError, ftplib.Error):
+            client.close()
+
+    @contextmanager
+    def _failure(self, description: str, *, hint: str = "") -> Iterator[None]:
+        try:
+            yield
+        except ftplib.error_perm as error:
+            raise PathOperationError(
+                f"could not {description}: {error}{hint}"
+            ) from error
+        except (OSError, ftplib.Error, ssl.SSLError) as error:
+            raise TransportError(f"could not {description}: {error}") from error
+
+    def _stage(self, step: str) -> str:
+        return {
+            "store": "upload staging file (STOR)",
+            "size": "verify upload size (SIZE)",
+            "set_time": f"set timestamp ({self._timestamp_command})",
+            "read_time": "verify timestamp (MDTM)",
+        }[step]
+
+    @property
+    def _timestamp_hint(self) -> str:
+        if self._timestamp_command != "MDTM":
+            return ""
+        return ". Check mdtm_write and file permissions on the FTP server."
+
+    def _ftp(self) -> ftplib.FTP_TLS:
+        if self._client is None:
+            raise TransportError("FTPS transport is not connected")
+        return self._client
+
+    def _list_children(
+        self,
+        directory: PurePosixPath,
+        file_progress: Callable[[int, int], None] | None,
+    ) -> list[RemoteChild]:
+        remote_directory = directory.as_posix()
+        if remote_directory == ".":
+            remote_directory = ""
+        listed = (
+            self._ftp().mlsd(remote_directory, facts=["type", "size", "modify"])
+            if self.lists_with_mlsd
+            else self._list_facts(directory, file_progress)
+        )
+        children: list[RemoteChild] = []
+        for name, facts in listed:
+            entry_type = facts.get("type", "").lower()
+            if entry_type in {"cdir", "pdir"}:
+                continue
+            relative_path = (directory / name).as_posix()
+            if entry_type == "dir":
+                children.append(RemoteChild(name, "directory"))
+                continue
+            if entry_type.startswith("os.unix=slink"):
+                children.append(RemoteChild(name, "symlink"))
+                continue
+            if entry_type != "file":
+                raise TransportError(
+                    f"unsupported remote entry type {entry_type!r} "
+                    f"for '{relative_path}'"
+                )
+            size_value = facts.get("size")
+            modified_value = facts.get("modify")
+            if size_value is None or modified_value is None:
+                raise TransportError(
+                    f"remote file metadata is incomplete for '{relative_path}'"
+                )
+            try:
+                size = int(size_value)
+            except ValueError as error:
+                raise TransportError(
+                    f"invalid MLSD size {size_value!r} for '{relative_path}'"
+                ) from error
+            modified_ns, precision_ns = _parse_mlsd_modify(
+                modified_value, relative_path
+            )
+            children.append(
+                RemoteChild(name, "file", size, modified_ns, precision_ns)
+            )
+        return children
+
+    def _list_facts(
+        self,
+        directory: PurePosixPath,
+        file_progress: Callable[[int, int], None] | None,
+    ) -> list[tuple[str, dict[str, str]]]:
+        client = self._ftp()
+        lines: list[str] = []
+        # Keep options separate from paths; servers disagree on LIST -a PATH.
+        previous = client.pwd()
+        client.cwd(f"./{directory.as_posix()}")
+        try:
+            client.retrlines("LIST -a", lines.append)
+        finally:
+            try:
+                client.cwd(previous)
+            except (OSError, ftplib.Error) as error:
+                client.close()
+                self._client = None
+                raise TransportError(
+                    "could not restore remote working directory"
+                ) from error
+        children: list[tuple[str, dict[str, str]]] = []
+        client.voidcmd("TYPE I")
+        files_listed = sum(1 for line in lines if line.startswith("-"))
+        files_read = 0
+        for line in lines:
+            parsed = _parse_list_line(line)
+            if parsed is None:
+                continue
+            name, kind = parsed
+            facts = {"type": {"d": "dir", "-": "file", "l": "OS.unix=slink"}[kind]}
+            if kind == "-":
+                remote_path = f"./{(directory / name).as_posix()}"
+                size = client.size(remote_path)
+                if size is None:
+                    raise TransportError(f"missing remote size for '{name}'")
+                response = client.sendcmd(f"MDTM {remote_path}")
+                _parse_mdtm_response(response, remote_path)
+                facts.update(size=str(size), modify=response.partition(" ")[2].strip())
+                files_read += 1
+                if file_progress is not None:
+                    file_progress(files_read, files_listed)
+            children.append((name, facts))
+        return children
+
+    def _store(
+        self, path: str, source: BinaryIO, progress: Callable[[int], None] | None
+    ) -> None:
+        callback = (
+            (lambda block: progress(len(block))) if progress is not None else None
+        )
+        self._ftp().storbinary(f"STOR {path}", source, callback=callback)
+
+    def _size(self, path: str) -> int:
+        size = self._ftp().size(path)
+        if size is None:
+            raise TransportError(f"missing remote size for '{path}'")
+        return size
+
+    def _set_modified(self, path: str, seconds: int) -> None:
+        response = self._ftp().sendcmd(
+            f"{self._timestamp_command} {_format_utc(seconds)} {path}"
+        )
+        if len(response) < 3 or not response[:3].isdigit() or response[0] != "2":
+            raise ftplib.error_reply(response)
+
+    def _read_modified(self, path: str) -> tuple[int, int]:
+        return _parse_mdtm_response(self._ftp().sendcmd(f"MDTM {path}"), path)
+
+    def _rename(self, source: str, destination: str) -> None:
+        self._ftp().rename(source, destination)
+
+    def _delete_file(self, path: str) -> None:
+        self._ftp().delete(path)
+
+    def _make_dir(self, path: str) -> None:
+        self._ftp().mkd(path)
+
+    def _remove_dir(self, path: str) -> None:
+        self._ftp().rmd(path)
+
+    def _retrieve(self, path: str, destination: BinaryIO) -> None:
+        self._ftp().retrbinary(f"RETR {path}", destination.write)
+
+    def _make_absolute_directory(self, path: str) -> None:
+        self._ftp().mkd(path)
+
+    def _enter_root(self) -> None:
+        self._ftp().cwd(self.configuration.remote_root)

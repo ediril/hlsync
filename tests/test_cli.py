@@ -239,12 +239,13 @@ def test_profile_lifecycle_uses_production_credentials_and_version(
     assert profile.password_env == "PROD_FTPS_PASSWORD"
 
     help_output = invoke(["help"], store)[1]
-    assert "create              create an FTPS profile" in help_output
+    assert "create              create an FTPS or SFTP profile" in help_output
     assert "add" not in help_output
     assert "--legend" in help_output
-    assert "inside a mapped" in help_output
-    assert "profile; prefix a command" in help_output
-    assert "one-command override" in help_output
+    assert (
+        "inside a mapped profile; prefix a command with a profile only for a "
+        "one-command override"
+    ) in " ".join(help_output.split())
     assert "diff                preview file changes without modifying anything" in (
         help_output
     )
@@ -981,7 +982,8 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
     serve_nested_directory = True
 
     class FakeTransport:
-        lists_with_mlsd = True
+        reads_file_metadata_separately = False
+        server_software = None
         missing_remote_root = False
 
         def __init__(self, profile) -> None:
@@ -1144,8 +1146,8 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
         "Verified secure connectivity to profile 'prod'.\n",
         "",
     )
-    FakeTransport.lists_with_mlsd = False
-    FakeTransport.vsftpd = True
+    FakeTransport.reads_file_metadata_separately = True
+    FakeTransport.server_software = "vsFTPd"
     assert invoke(["connect"], store) == (
         0,
         "Verified secure connectivity to profile 'prod'.\n"
@@ -1155,7 +1157,7 @@ def test_current_profile_inference_drives_connect_and_tree_listings(
         "folders at once.\n",
         "",
     )
-    FakeTransport.lists_with_mlsd = True
+    FakeTransport.reads_file_metadata_separately = False
     local_listing = (
         0,
         "Local tree for profile 'prod':\n"
@@ -1549,7 +1551,8 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
     listed = []
 
     class RemoteOnlyTransport:
-        lists_with_mlsd = True
+        reads_file_metadata_separately = False
+        server_software = None
         missing_remote_root = False
 
         def __init__(self, profile):
@@ -1595,7 +1598,8 @@ def test_recursive_diff_prunes_locally_excluded_remote_only_directory(
 
 
 class _ListingTransport:
-    lists_with_mlsd = True
+    reads_file_metadata_separately = False
+    server_software = None
     missing_remote_root = False
     remote: dict = {}
     listed: list = []
@@ -1743,7 +1747,8 @@ def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> 
     operations = []
 
     class ProtectedTransport:
-        lists_with_mlsd = True
+        reads_file_metadata_separately = False
+        server_software = None
         missing_remote_root = False
 
         def __init__(self, profile) -> None:
@@ -1927,7 +1932,8 @@ def test_push_stops_at_the_first_failure_and_counts_what_did_not_start(
     uploads = []
 
     class PartiallyWritableTransport:
-        lists_with_mlsd = True
+        reads_file_metadata_separately = False
+        server_software = None
         missing_remote_root = False
 
         def __init__(self, profile):

@@ -15,6 +15,8 @@ CONFIG_VERSION = 9
 COMMON_RULES_VERSION = 1
 PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Protocols and their default ports.
+PROTOCOLS = {"ftps": 21, "sftp": 22}
 DEFAULT_HOST_ENV = "PROD_FTPS_HOST"
 DEFAULT_USERNAME_ENV = "PROD_FTPS_USERNAME"
 DEFAULT_PASSWORD_ENV = "PROD_FTPS_PASSWORD"
@@ -215,8 +217,8 @@ class ProfileConfiguration:
             "remote_root",
             _normalize_remote_root(self.remote_root),
         )
-        if self.type != "ftps":
-            raise ConfigurationError("profile protocol must be 'ftps'")
+        if self.type not in PROTOCOLS:
+            raise ConfigurationError("profile protocol must be 'ftps' or 'sftp'")
         if isinstance(self.port, bool) or not isinstance(self.port, int):
             raise ConfigurationError("port must be an integer")
         if not 1 <= self.port <= 65535:

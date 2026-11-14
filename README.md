@@ -1,8 +1,8 @@
 # HLSync
 
 HLSync (`hlsync`) is a command-line workflow for deploying local
-projects to shared hosting over explicit FTP over TLS (FTPS): map once, preview
-the diff, then push the intended files.
+projects to shared hosting or your own server over explicit FTP over TLS
+(FTPS) or SFTP: map once, preview the diff, then push the intended files.
 
 ![HLSync mapping a website folder to an FTPS server, previewing the diff, and pushing the files](https://raw.githubusercontent.com/ediril/hlsync/main/demos/hlsync.gif)
 
@@ -38,6 +38,10 @@ use Unix-style LIST listings with SIZE and MDTM for exact file metadata.
 LIST mode includes dotfiles and requires two extra requests per file. Push additionally
 requires MFMT (or writable MDTM on vsFTPd) and MDTM read-back to apply and verify
 uploaded-file timestamps.
+
+SFTP works with any SSH server that offers the SFTP subsystem, such as OpenSSH.
+The server's host key must already be in `~/.ssh/known_hosts`. See
+[SFTP profiles](https://github.com/ediril/hlsync/blob/main/docs/profiles.md#sftp-profiles).
 
 ## Quick start
 

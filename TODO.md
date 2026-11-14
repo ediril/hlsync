@@ -204,6 +204,12 @@
   preparation:
   - [x] Define the initial optional Business support offering, superseded by
     the current noncommercial and paid commercial licensing policy.
+- [x] Add SFTP as a second transport on a shared staged-upload base, with
+  SSH key or password login and known_hosts verification.
+- [ ] Verify SFTP against a real OpenSSH server on the user's VM: a deploy
+  user, key login, a known_hosts entry, then connect, diff, push with `-j`,
+  replacement, prune, and pull. Record any server behavior the asyncssh test
+  server does not reproduce.
 - [ ] Characterize and scale structured rule matching without requiring user
   discipline:
   - [x] Replace raw Gitignore entries with explicit, stable-ID HLSync rules and
@@ -237,5 +243,5 @@
   - Design a validated incremental remote manifest only if measurements justify
     it, with explicit invalidation for remote drift, interrupted transfers, and
     configuration or rule changes.
-  - Document when FTPS is the limiting protocol and a VM transport such as SFTP
-    or rsync is the appropriate production path.
+  - Document when FTPS is the limiting protocol and SFTP on a VM is the
+    appropriate production path.

@@ -34,7 +34,8 @@ uploads already running on other sessions finish, deletions do not run, and the
 result counts the operations that were not started. The same rule applies with
 one session or several. Pull also stops at its first failure.
 
-Uploads run concurrently over independent FTPS sessions: the scanning session
+Uploads run concurrently over independent sessions (FTPS connections or SFTP
+connections, one SSH connection each): the scanning session
 plus extra sessions opened only for the upload phase. Each session performs the
 complete staged upload for one file at a time. All files wait in one queue that
 hands each file to exactly one session, and a session takes the next file as
