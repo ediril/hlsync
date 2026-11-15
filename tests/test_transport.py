@@ -269,6 +269,10 @@ def test_a_missing_remote_root_reads_empty_until_its_folders_are_created(
             assert missing._find_missing_root(
                 missing._client, ftplib.error_perm("550")
             ) == ("site", "releases", "current")
+    with transport("site/releases/current") as relative:
+        # pyftpdlib logs the account in to '/'.
+        assert relative.remote_root == "/site/releases/current"
+        assert relative.missing_remote_root
     with transport("/site/releases/current") as missing:
         assert missing.missing_remote_root
         assert missing.snapshot(RuleSet()) == TreeSnapshot()

@@ -117,6 +117,7 @@ class SFTPTransport(RemoteTransport):
             )
             client = ssh.open_sftp()
             client.get_channel().settimeout(self.timeout)
+            self.remote_root = self._resolve_root(client.normalize("."))
             self._missing_root = self._find_missing_root(client)
         except paramiko.BadHostKeyException as error:
             ssh.close()
@@ -144,7 +145,7 @@ class SFTPTransport(RemoteTransport):
 
     def _find_missing_root(self, client: paramiko.SFTPClient) -> tuple[str, ...]:
         """Return the absent folders of the remote root, outermost first."""
-        root = PurePosixPath(self.configuration.remote_root)
+        root = PurePosixPath(self.remote_root)
         for folder in (root, *root.parents):
             try:
                 attributes = client.stat(folder.as_posix())
@@ -197,7 +198,7 @@ class SFTPTransport(RemoteTransport):
         return self._client
 
     def _remote(self, path: str) -> str:
-        return (PurePosixPath(self.configuration.remote_root) / path).as_posix()
+        return (PurePosixPath(self.remote_root) / path).as_posix()
 
     def _list_children(
         self,

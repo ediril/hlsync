@@ -154,6 +154,8 @@ class RemoteTransport(ABC):
     configuration: ProfileConfiguration
 
     def __post_init__(self) -> None:
+        # The absolute remote root, resolved from the login folder on connect.
+        self.remote_root = self.configuration.remote_root
         # Folders of the remote root that do not exist yet, outermost first.
         self._missing_root: tuple[str, ...] = ()
 
@@ -236,12 +238,16 @@ class RemoteTransport(ABC):
     def missing_remote_root(self) -> bool:
         return bool(self._missing_root)
 
+    def _resolve_root(self, login_folder: str) -> str:
+        root = PurePosixPath(self.configuration.remote_root)
+        if root.is_absolute():
+            return root.as_posix()
+        return (PurePosixPath(login_folder) / root).as_posix()
+
     def _ready(self) -> None:
         if self._missing_root:
             # Until the root exists, relative paths would resolve elsewhere.
-            raise TransportError(
-                f"remote root '{self.configuration.remote_root}' does not exist"
-            )
+            raise TransportError(f"remote root '{self.remote_root}' does not exist")
         if not self._connected:
             raise TransportError(f"{self.protocol_name} transport is not connected")
 
@@ -249,7 +255,7 @@ class RemoteTransport(ABC):
         """Create each missing folder of the remote root, then enter it."""
         if not self._connected:
             raise TransportError(f"{self.protocol_name} transport is not connected")
-        root = PurePosixPath(self.configuration.remote_root)
+        root = PurePosixPath(self.remote_root)
         folder = PurePosixPath(*root.parts[: len(root.parts) - len(self._missing_root)])
         for name in self._missing_root:
             folder /= name
@@ -675,6 +681,7 @@ class ExplicitFTPSTransport(RemoteTransport):
             client.auth()
             client.login(username, password)
             client.prot_p()
+            self.remote_root = self._resolve_root(client.pwd())
             features = client.sendcmd("FEAT")
             advertised = {
                 line.strip().upper().split(" ", 1)[0]
@@ -689,7 +696,7 @@ class ExplicitFTPSTransport(RemoteTransport):
                 for line in features.splitlines()
             )
             try:
-                client.cwd(self.configuration.remote_root)
+                client.cwd(self.remote_root)
             except ftplib.error_perm as error:
                 self._missing_root = self._find_missing_root(client, error)
         except (OSError, ftplib.Error, ssl.SSLError) as error:
@@ -711,7 +718,7 @@ class ExplicitFTPSTransport(RemoteTransport):
         The nearest enterable ancestor must list no entry for the next folder;
         an entry there that cannot be entered keeps the original refusal.
         """
-        root = PurePosixPath(self.configuration.remote_root)
+        root = PurePosixPath(self.remote_root)
         for ancestor in root.parents:
             try:
                 client.cwd(ancestor.as_posix())
@@ -909,4 +916,4 @@ class ExplicitFTPSTransport(RemoteTransport):
         self._ftp().mkd(path)
 
     def _enter_root(self) -> None:
-        self._ftp().cwd(self.configuration.remote_root)
+        self._ftp().cwd(self.remote_root)

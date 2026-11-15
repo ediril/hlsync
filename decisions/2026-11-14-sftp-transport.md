@@ -18,7 +18,8 @@ classifies its own errors into a path failure, after which the session remains
 usable, or a session failure.
 
 SFTP uses paramiko. Paths are joined to the remote root on the client; there is
-no working directory. A listing returns each entry's type, size, and
+no working directory. A relative remote root is resolved against the login
+folder the server reports for '.'. A listing returns each entry's type, size, and
 whole-second modification time in one request. Timestamps are set with SETSTAT
 and read back with STAT before installation, as with FTPS.
 

@@ -5,8 +5,12 @@ Date: 2026-08-29
 ## Decision
 
 Each configured entry is a deployment profile, not a server. A profile owns
-its protocol and endpoint, credential environment-variable names, absolute
-remote root, and at most one canonical absolute local root. Profiles may share
+its protocol and endpoint, credential environment-variable names, a remote
+root, and at most one canonical absolute local root. A remote root is absolute,
+or relative to the folder the account logs in to; the transport resolves a
+relative root when it connects, from the login folder the server reports (FTP
+PWD, SFTP REALPATH of '.'), so the stored value never depends on a server
+lookup. Profiles may share
 a host, but their local roots may not equal, contain, or be contained by one
 another. Every descendant keeps the same profile-relative path beneath the
 remote root.

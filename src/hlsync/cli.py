@@ -415,7 +415,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--host", help=f"server host (default: {_protocol_defaults('host_env')})"
     )
     create_parser.add_argument(
-        "-r", "--remote-root", required=True, help="absolute server directory"
+        "-r",
+        "--remote-root",
+        required=True,
+        help="server folder; a relative path starts at the login folder",
     )
     create_parser.add_argument(
         "--protocol",
@@ -486,7 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-r",
         "--remote-root",
         metavar="PATH",
-        help="new absolute remote root; omitted leaves it unchanged",
+        help="new remote root, relative to the login folder unless absolute",
     )
 
     rule_change_help = {
@@ -1016,7 +1019,7 @@ def _connection_notes(
     notes = []
     if transport.missing_remote_root:
         notes.append(
-            f"Remote root {profile.remote_root} does not exist yet; "
+            f"Remote root {transport.remote_root} does not exist yet; "
             "push will create it."
         )
     slow = _slow_listing_note(transport)
@@ -3070,7 +3073,9 @@ def _transfer(
         if has_work and not dry_run and transport.missing_remote_root:
             transport.create_remote_root()
             print(
-                f"Created remote root {profile.remote_root}.", file=progress, flush=True
+                f"Created remote root {transport.remote_root}.",
+                file=progress,
+                flush=True,
             )
         upload_sessions = (
             _open_upload_sessions(

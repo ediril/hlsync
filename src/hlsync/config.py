@@ -83,10 +83,11 @@ def _environment_name(value: Any, field_name: str) -> str:
 def _normalize_remote_root(value: Any) -> str:
     remote_value = _required_string(value, "profile remote root")
     remote_path = PurePosixPath(remote_value)
-    if not remote_path.is_absolute():
-        raise ConfigurationError("profile remote root must be absolute")
     if ".." in remote_path.parts:
         raise ConfigurationError("profile remote root cannot contain '..'")
+    if not remote_path.is_absolute():
+        # A relative root starts at the folder the account logs in to.
+        return remote_path.as_posix()
     components = [part for part in remote_path.parts if part not in {"/", "//"}]
     return "/" + "/".join(components)
 

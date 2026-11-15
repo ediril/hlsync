@@ -21,7 +21,7 @@ from hlsync.transport import PathOperationError, TransportError
 def sftp_server(tmp_path, monkeypatch):
     """A real SFTP server over SSH, serving tmp_path/remote as '/'."""
     remote = tmp_path / "remote"
-    remote.mkdir()
+    (remote / "home" / "deploy").mkdir(parents=True)
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True)
     host_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -43,6 +43,12 @@ def sftp_server(tmp_path, monkeypatch):
         def validate_public_key(self, username, key):
             return username == "deploy" and key.public_data == client_key.public_data
 
+    class LoginFolderServer(asyncssh.SFTPServer):
+        """Logs the account in to /home/deploy, like an OpenSSH home folder."""
+
+        def realpath(self, path):
+            return b"/home/deploy" if path == b"." else super().realpath(path)
+
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
@@ -53,7 +59,7 @@ def sftp_server(tmp_path, monkeypatch):
             0,
             server_host_keys=[host_key],
             server_factory=Server,
-            sftp_factory=lambda channel: asyncssh.SFTPServer(
+            sftp_factory=lambda channel: LoginFolderServer(
                 channel, chroot=os.fspath(remote)
             ),
         )
@@ -98,26 +104,28 @@ def test_an_sftp_profile_creates_its_root_and_pushes_replaces_prunes_and_pulls(
     monkeypatch.setenv("PROD_FTPS_HOST", "ftp.unrelated.example")
     created = invoke(
         "create", "prod", "--protocol", "sftp", "--port", str(port),
-        "-r", "/site/current", "--local-root", str(local),
+        "-r", "./sites/demo/", "--local-root", str(local),
     )
     assert created[1].startswith(
         "Created SFTP profile 'prod' on 127.0.0.1 (from PROD_SFTP_HOST).\n"
     )
     profile = store.load().profiles["prod"]
-    assert (profile.port, profile.username_env, profile.password_env) == (
-        port, "PROD_SFTP_USERNAME", "PROD_SFTP_PASSWORD",
-    )
+    assert (
+        profile.remote_root, profile.port, profile.username_env, profile.password_env
+    ) == ("sites/demo", port, "PROD_SFTP_USERNAME", "PROD_SFTP_PASSWORD")
     assert invoke("connect")[1] == (
         "Verified secure connectivity to profile 'prod'.\n"
-        "Remote root /site/current does not exist yet; push will create it.\n"
+        "Remote root /home/deploy/sites/demo does not exist yet; push will "
+        "create it.\n"
     )
 
     status, _, progress = invoke("push", "-j", "2")
     assert status == 0, progress
     assert "Connecting securely over SFTP...\n" in progress
-    assert "Created remote root /site/current.\n" in progress
+    assert "Created remote root /home/deploy/sites/demo.\n" in progress
     assert "Using 2 connections.\n" in progress
-    current = remote / "site" / "current"
+    assert not (remote / "sites").exists()
+    current = remote / "home" / "deploy" / "sites" / "demo"
     assert (current / "index.html").read_text() == "index"
     assert (current / "assets" / "app.js").read_text() == "app"
     assert int((current / "index.html").stat().st_mtime) == int(
@@ -145,8 +153,9 @@ def test_sftp_logs_in_with_keys_checks_host_keys_and_classifies_failures(
 ):
     port, remote, home, client_key = sftp_server
     profile = ProfileConfiguration(
-        type="sftp", host="127.0.0.1", port=port, remote_root="/"
+        type="sftp", host="127.0.0.1", port=port, remote_root="."
     )
+    login_folder = remote / "home" / "deploy"
     key_file = home / ".ssh" / "id_ed25519"
     key_file.write_bytes(client_key.export_private_key("openssh"))
     key_file.chmod(0o600)
@@ -156,12 +165,12 @@ def test_sftp_logs_in_with_keys_checks_host_keys_and_classifies_failures(
 
     with SFTPTransport(profile) as transport:
         assert transport.list_directory(PurePosixPath(), RuleSet()) == TreeSnapshot()
-        (remote / "locked").mkdir(mode=0o500)
+        (login_folder / "locked").mkdir(mode=0o500)
         try:
             with pytest.raises(PathOperationError, match="create remote directory"):
                 transport.make_directory("locked/inner")
         finally:
-            (remote / "locked").chmod(0o700)
+            (login_folder / "locked").chmod(0o700)
         transport._ssh.close()
         with pytest.raises(TransportError) as lost:
             transport.make_directory("after-disconnect")

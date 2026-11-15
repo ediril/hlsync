@@ -32,6 +32,14 @@ hlsync create staging -r /public_html/staging
 `create` copies the host into the profile and names it in its output, so later
 changes to the variable do not affect existing profiles.
 
+The remote root is either absolute (`/public_html/site`) or relative to the
+folder the account logs in to (`site`). A relative root is resolved each time
+HLSync connects, and messages show the resolved path, such as `Remote root
+/home/deploy/site does not exist yet`. `.` deploys into the login folder
+itself; avoid it when that folder is the account's home, because `push -p`
+deletes remote files that are not in the local folder, including
+`.ssh/authorized_keys`. Give each site its own folder instead.
+
 HLSync stores the canonical absolute local root and maps every descendant to
 the same relative path under the remote root. Roots may not overlap across
 profiles. Remapping requires confirmation and defaults to no.
@@ -108,7 +116,7 @@ Create an SFTP profile with `--protocol sftp`. The port defaults to 22:
 
 ```console
 export PROD_SFTP_USERNAME=deploy
-hlsync create vm --protocol sftp --host vm.example.com -r /var/www/site
+hlsync create blog --protocol sftp --host vm.example.com -r blog
 ```
 
 SFTP logs in the way `ssh` does. HLSync offers, in order, the keys in your
@@ -126,6 +134,13 @@ offered to an SSH server:
 | SFTP     | `PROD_SFTP_HOST` | `PROD_SFTP_USERNAME` | `PROD_SFTP_PASSWORD` | 22   |
 
 With key login, an SFTP profile usually needs only `PROD_SFTP_USERNAME`.
+`PROD_SFTP_PASSWORD` is the server account's login password, not a key
+passphrase; never put a passphrase in it.
+
+HLSync cannot ask for a key passphrase. A key with a passphrase must be in
+ssh-agent. On macOS, `ssh-add --apple-use-keychain ~/.ssh/KEY` adds it once and
+stores the passphrase in the keychain. After a restart, run
+`ssh-add --apple-load-keychain`, or `ssh` to the server once, before `hlsync`.
 Other `~/.ssh/config` settings, such as `HostName`, `Port`, and `User`, are not
 applied; the profile records those itself.
 
@@ -134,9 +149,11 @@ are missing from it or whose key changed. Before the first connection, run
 `ssh` once (for example `ssh deploy@vm.example.com`) to check and save the host
 key, then `hlsync connect`.
 
-The remote root is a path on the server's file system, such as
-`/var/www/site`, unless the server confines the account to a chroot. Everything
-else works as with FTPS: staged and verified uploads, `-j` parallel uploads
+An absolute remote root is a path on the server's file system, such as
+`/var/www/site`, unless the server confines the account to a chroot. A relative
+root starts at the account's home folder, so with a deploy account whose home
+is `/srv/sites`, `-r blog` deploys to `/srv/sites/blog`, and the first push
+creates it. Everything else works as with FTPS: staged and verified uploads, `-j` parallel uploads
 (each one a separate SSH connection), pruning, pull, and creation of a missing
 remote root. SFTP returns every file's size and modification time in one
 listing request, so large folders list quickly.
