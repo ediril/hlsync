@@ -76,7 +76,7 @@ function h(string $value): string
     <meta name="theme-color" content="#080b10">
     <meta name="description" content="<?= h($description) ?>">
     <meta name="robots" content="index, follow, max-image-preview:large">
-    <meta name="author" content="HLSync contributors">
+    <meta name="author" content="Emrah Diril">
     <meta property="og:type" content="website">
     <meta property="og:locale" content="en_US">
     <meta property="og:site_name" content="HLSync">
@@ -327,7 +327,7 @@ function h(string $value): string
     </main>
 
     <footer class="site-footer">
-        <p>© <?= h((string) $year) ?> HLSync contributors</p>
+        <p>© <?= h((string) $year) ?> Emrah Diril</p>
     </footer>
 </body>
 </html>
