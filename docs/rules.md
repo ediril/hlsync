@@ -40,7 +40,7 @@ Manage common exclusions and inclusions from any directory with `-c` /
 hlsync exclude -c '*.tmp'
 hlsync include -c 'public/*.tmp'
 hlsync rules -c      # inspect common rules
-hlsync exclude -d c4 # c prefix selects common rules
+hlsync rules -d c4   # c prefix selects common rules
 ```
 
 Profile rules are the extra rules for one profile only. Common rules apply
@@ -139,12 +139,9 @@ redundant exact rules but preserves ambiguous wildcard overlaps.
 
 ```console
 hlsync rules
-hlsync exclude -d 3 5 c4
-hlsync include -d 4
+hlsync rules -d 3 5 c4
 ```
 
-`-d` / `--drop` removes rules by ID, several at once as separate operands or
-comma groups. `exclude -d` removes only exclude rules and `include -d` only
-include rules; naming the other kind is an error that points to the right
-command. Every ID is checked before any rule is removed. `hlsync rules` describes wildcards in words,
+`rules -d` removes rules by ID, include or exclude, several at once as separate
+operands or comma groups. Every ID is checked before any rule is removed. `hlsync rules` describes wildcards in words,
 such as `*.webp (all subfolders)` or `*.webp (this folder only)`.

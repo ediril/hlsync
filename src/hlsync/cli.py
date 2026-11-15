@@ -504,13 +504,11 @@ def build_parser() -> argparse.ArgumentParser:
                 f"hlsync [PROFILE] {command} [--remote] "
                 "[--anywhere | --shallow] [--ext EXT] [-m] PATH\n"
                 f"       hlsync {command} -c [--remote] "
-                "[--anywhere | --shallow] [--ext EXT] [-m] PATH\n"
-                f"       hlsync [PROFILE] {command} -d RULE_ID ..."
+                "[--anywhere | --shallow] [--ext EXT] [-m] PATH"
             ),
             description=(
                 f"Record {command} rules for the current profile, or for every "
-                f"profile with -c. Remove {command} rules by their IDs with -d. "
-                "List rules with 'hlsync rules'."
+                "profile with -c. List or remove rules with 'hlsync rules'."
             ),
         )
         add_pattern_operands(
@@ -560,26 +558,27 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="accept several space-separated paths",
         )
-        rule_parser.add_argument(
-            "-d",
-            "--drop",
-            action="store_true",
-            help=(
-                f"remove the {command} rules with the given IDs "
-                "(c-prefixed IDs are common rules)"
-            ),
-        )
 
     rules_parser = subparsers.add_parser(
         "rules",
-        help="list synchronization rules and applied .gitignore patterns",
-        usage="hlsync [PROFILE] rules\n       hlsync rules -c",
+        help="list or remove synchronization rules",
+        usage=(
+            "hlsync [PROFILE] rules [-c]\n"
+            "       hlsync [PROFILE] rules -d RULE_ID ..."
+        ),
         description=(
             "List the .gitignore patterns HLSync applies, then common and "
             "profile rules, from lowest to highest precedence. Use -c for "
-            "common rules only. Add rules with 'hlsync exclude' and "
-            "'hlsync include'; remove them with -d."
+            "common rules only. Remove rules by their IDs with -d. Add rules "
+            "with 'hlsync exclude' and 'hlsync include'."
         ),
+    )
+    rules_parser.add_argument("rule_ids", nargs="*", metavar="RULE_ID")
+    rules_parser.add_argument(
+        "-d",
+        "--drop",
+        action="store_true",
+        help="remove the rules with these IDs (c-prefixed IDs are common rules)",
     )
     rules_parser.add_argument(
         "-c",
@@ -1271,8 +1270,6 @@ def _change_rules(
     *,
     include: bool,
 ) -> str:
-    if arguments.drop:
-        return _drop_rules(arguments, store, include=include)
     if len(arguments.pattern_operands) > 1 and not arguments.multiple:
         raise ConfigurationError("got multiple paths; quote wildcards or add -m")
     patterns = normalize_pattern_operands(arguments)
@@ -1429,18 +1426,11 @@ def _format_rule_update(
     return f"Synchronization rules for {scope} are unchanged."
 
 
-def _drop_rules(
-    arguments: argparse.Namespace,
-    store: ConfigurationStore,
-    *,
-    include: bool,
-) -> str:
-    if arguments.remote or arguments.shallow or arguments.anywhere or arguments.ext:
-        raise ConfigurationError("--drop takes only rule IDs")
+def _drop_rules(arguments: argparse.Namespace, store: ConfigurationStore) -> str:
     identifiers = tuple(
         dict.fromkeys(
             value.strip()
-            for operand in arguments.pattern_operands
+            for operand in arguments.rule_ids
             for value in operand.split(",")
         )
     )
@@ -1458,24 +1448,9 @@ def _drop_rules(
         for value in identifiers
         if not (arguments.common_rules or value.startswith("c"))
     )
-    action = "include" if include else "exclude"
     common_store = _common_rule_store(store)
     common_configuration = common_store.load()
     profile_target = _resolve_profile(arguments, store) if profile_ids else None
-    candidates = [
-        (rule, True) for rule in common_configuration.rules if rule.id in common_ids
-    ]
-    if profile_target is not None:
-        candidates.extend(
-            (rule, False) for rule in profile_target[2].rules if rule.id in profile_ids
-        )
-    for rule, common_scope in candidates:
-        if rule.action != action:
-            identifier = _format_rule_id(rule, common_scope=common_scope)
-            raise ConfigurationError(
-                f"rule {identifier} is an {rule.action} rule; "
-                f"use 'hlsync {rule.action} -d {identifier}'"
-            )
     reports = []
     if common_ids:
         common_configuration, removed = common_configuration.without_rules(common_ids)
@@ -1493,6 +1468,8 @@ def _drop_rules(
 
 
 def _list_rules(arguments: argparse.Namespace, store: ConfigurationStore) -> str:
+    if arguments.rule_ids:
+        raise ConfigurationError("rule IDs need -d, as in 'hlsync rules -d 3'")
     common_rules = _common_rule_store(store).load().rules
     if arguments.common_rules:
         formatted = _format_rule_sections(((COMMON_RULES_HEADING, common_rules, True),))
@@ -3176,7 +3153,11 @@ def run(
         elif arguments.command == "map":
             message = _map(arguments, configuration_store, stdin, stdout)
         elif arguments.command == "rules":
-            message = _list_rules(arguments, configuration_store)
+            message = (
+                _drop_rules(arguments, configuration_store)
+                if arguments.drop
+                else _list_rules(arguments, configuration_store)
+            )
         elif arguments.command in {"exclude", "include"}:
             message = _change_rules(
                 arguments,

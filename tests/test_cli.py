@@ -186,7 +186,7 @@ def test_rule_operands_refuse_shell_expansion_and_keep_wildcards(
     assert [rule.pattern for rule in store.load().profiles["prod"].rules] == [
         "static/a.webp", "static/b.webp",
     ]
-    assert invoke(["include", "-d", "1,2"], store)[0] == 0
+    assert invoke(["rules", "-d", "1,2"], store)[0] == 0
 
     assert invoke(["exclude", "static/*.webp"], store)[0] == 0
     rules = _effective_rules(store, store.load().profiles["prod"])
@@ -314,7 +314,7 @@ def test_profile_lifecycle_uses_production_credentials_and_version(
     assert "hlsync [PROFILE] exclude [--remote] [--anywhere | --shallow]" in (
         exclude_help
     )
-    assert "hlsync [PROFILE] exclude -d RULE_ID ..." in exclude_help
+    assert "hlsync [PROFILE] rules -d RULE_ID ..." in rules_help
     assert "include paths, overriding broader exclusions" in invoke(
         ["help"], store
     )[1]
@@ -571,11 +571,11 @@ def test_common_rules_seed_outside_profiles_and_allow_profile_overrides(
         "Rules override .gitignore; profile rules override common rules; "
         "later matching rules win.\n"
     )
-    invalid_common_id = invoke(["exclude", "-c", "-d", "8"], store)
+    invalid_common_id = invoke(["rules", "-c", "-d", "8"], store)
     assert invalid_common_id[0] == 1
     assert "rule id must be c-prefixed (for example c3)" in invalid_common_id[2]
     monkeypatch.chdir(outside)
-    assert invoke(["include", "-d", f"c{inclusion_id}"], store) == (
+    assert invoke(["rules", "-d", f"c{inclusion_id}"], store) == (
         0,
         "Common rules removed:\n"
         f"  c{inclusion_id}  include .DS_Store (everywhere)\n",
@@ -617,17 +617,15 @@ def test_drop_removes_several_ids_across_scopes_or_none(
     common_store = CommonRuleStore(tmp_path / "rules.json")
     before = (store.load().profiles["prod"].rules, common_store.load().rules)
 
-    unknown = invoke(["exclude", "-d", "1", "c4", "99"], store)
+    unknown = invoke(["rules", "-d", "1", "c4", "99"], store)
     assert unknown[0] == 1
     assert "profile 'prod' has no rule with id 99" in unknown[2]
-    assert invoke(["include", "-d", "c4", "2"], store) == (
-        1,
-        "",
-        "hlsync: error: rule c4 is an exclude rule; use 'hlsync exclude -d c4'\n",
-    )
     assert (store.load().profiles["prod"].rules, common_store.load().rules) == before
 
-    assert invoke(["exclude", "-d", "3,c4", "1", "c4"], store) == (
+    assert invoke(["rules", "3"], store) == (
+        1, "", "hlsync: error: rule IDs need -d, as in 'hlsync rules -d 3'\n"
+    )
+    assert invoke(["rules", "-d", "3,c4", "1", "c4"], store) == (
         0,
         "Common rules removed:\n  c4  exclude .DS_Store (everywhere)\n"
         "Rules removed for profile 'prod':\n"
@@ -899,7 +897,7 @@ def test_ordered_exclusion_commands_persist_reinclusion(
     assert f"  Local root: {workspace}\n" in profile_stdout
     assert "  Rules: 9\n" in profile_stdout
     assert invoke(["root"], store) == (0, f"{workspace}\n", "")
-    assert invoke(["include", "-d", "8"], store) == (
+    assert invoke(["rules", "-d", "8"], store) == (
         0,
         "Rules removed for profile 'prod':\n"
         "  8  include node_modules/package/ (all contents)\n",
