@@ -39,8 +39,33 @@ class GitIgnores:
 
     def _spec(self, directory: PurePosixPath) -> GitIgnoreSpec:
         if directory not in self._specs:
-            self._specs[directory] = GitIgnoreSpec.from_lines(self._read(directory))
+            spec = GitIgnoreSpec.from_lines(self._read(directory))
+            if len(directory.parts) < len(self._profile_prefix.parts):
+                spec = self._without_root_matches(spec, directory)
+            self._specs[directory] = spec
         return self._specs[directory]
+
+    def _without_root_matches(
+        self, spec: GitIgnoreSpec, directory: PurePosixPath
+    ) -> GitIgnoreSpec:
+        """Drop patterns of an ignore file above the root that ignore the root.
+
+        The profile root was chosen for deployment, so a pattern that ignores
+        it, or a folder that contains it, does not exclude what it holds.
+        """
+        prefix = self._profile_prefix.parts
+        folders = tuple(
+            PurePosixPath(*prefix[len(directory.parts) : depth]).as_posix() + "/"
+            for depth in range(len(directory.parts) + 1, len(prefix) + 1)
+        )
+        return GitIgnoreSpec(
+            pattern
+            for pattern in spec.patterns
+            if not (
+                pattern.include
+                and any(pattern.match_file(folder) for folder in folders)
+            )
+        )
 
     def sources(
         self, directories: tuple[str, ...]

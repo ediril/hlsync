@@ -6,7 +6,11 @@ HLSync automatically honors `.gitignore` files as local exclusions. When the
 mapped local root is inside a Git repository, this includes all ancestor
 `.gitignore` files up to the nearest repository root, plus files inside the
 mapped tree. Without an enclosing repository, ignore scope starts at the mapped
-root. Git worktrees are supported; no Git installation is needed.
+root. Git worktrees are supported; no Git installation is needed. Because you
+chose the mapped root for deployment, a pattern above it that ignores the root
+itself or a folder containing it (such as `tmp/` for a profile on `tmp`) does
+not exclude the root's contents. Other patterns from those files, such as
+`*.log` or `tmp/cache/`, still apply inside the root.
 Explicit HLSync rules override this baseline; profile rules override common rules.
 To deploy a Git-ignored path, use `hlsync include vendor/` (or a specific file).
 Ignore files above the repository root, Git's global excludes, and the Git index

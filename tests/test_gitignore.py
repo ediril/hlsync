@@ -28,6 +28,15 @@ def test_subdirectory_profile_uses_repository_scopes(tmp_path, worktree):
     assert not rules.excludes("notes", is_directory=True)
     assert rules.excludes("local.tmp")
 
-    # Ignoring the mapped directory itself still excludes its descendants.
-    (repo / ".gitignore").write_text("/site/public/\n")
-    assert GitIgnores(profile).excludes("notes/index.php")
+    # A pattern above the root that ignores the root, or a folder containing
+    # it, does not exclude the root's contents; other ancestor patterns apply.
+    (repo / ".gitignore").write_text(
+        "/site/public/\nsite/\n*.log\n/site/public/secret.txt\n"
+        "/site/public/cache/\n"
+    )
+    ignored_root = GitIgnores(profile)
+    assert not ignored_root.excludes("notes/index.php")
+    assert not ignored_root.excludes("notes", is_directory=True)
+    assert ignored_root.excludes("assets/debug.log")
+    assert ignored_root.excludes("secret.txt")
+    assert ignored_root.excludes("cache/data.bin")

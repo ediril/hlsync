@@ -210,6 +210,9 @@
   user, key login, a known_hosts entry, then connect, diff, push with `-j`,
   replacement, prune, and pull. Record any server behavior the asyncssh test
   server does not reproduce.
+- [ ] Match Git for negated folders: pathspec expands `!notes/` to every file
+  inside `notes`, re-including files that another pattern such as `*.log`
+  ignores; Git re-includes only the folder.
 - [ ] Characterize and scale structured rule matching without requiring user
   discipline:
   - [x] Replace raw Gitignore entries with explicit, stable-ID HLSync rules and

@@ -11,6 +11,10 @@ through the mapped tree. A `.git` file supports worktrees and submodules without
 invoking Git or reading their metadata. With no enclosing repository, start at
 the mapped root.
 
+A pattern in an ignore file above the mapped root that matches the root or a
+folder containing it is not applied: choosing the root for deployment overrides
+Git ignoring it. The other patterns of those files still apply inside the root.
+
 Evaluate patterns relative to each ignore file's directory. Preserve anchored
 patterns, deeper negations, and ignored-parent boundaries. Cache parsed files
 for one command without scanning siblings or following symlinked ignore files.
