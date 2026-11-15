@@ -327,9 +327,9 @@ def test_profile_lifecycle_uses_production_credentials_and_version(
     )
     list_help = invoke(["help", "list"], store)[1]
     assert "hlsync [PROFILE] lsr" in list_help
-    map_help = invoke(["help", "map"], store)[1]
-    assert "--local-root PATH" in map_help
-    assert "--remote-root PATH" in map_help
+    update_help = invoke(["help", "update"], store)[1]
+    assert "--protocol {ftps,sftp}" in update_help
+    assert "--local-root PATH" in update_help
     assert invoke(["--legend"], store) == (
         0,
         "Diff legend:\n"
@@ -1830,7 +1830,7 @@ def test_remote_rules_are_declarative_sync_boundaries(tmp_path, monkeypatch) -> 
     assert store.load().profiles["prod"].rules == ()
 
 
-def test_map_confirms_replacement_and_rejects_overlapping_local_roots(
+def test_update_confirms_root_changes_and_rejects_overlapping_local_roots(
     tmp_path, monkeypatch
 ) -> None:
     store = ConfigurationStore(tmp_path / "configs.json")
@@ -1860,13 +1860,12 @@ def test_map_confirms_replacement_and_rejects_overlapping_local_roots(
     assert invoke(["exclude", "*.log"], store)[0] == 0
     monkeypatch.chdir(child)
     overlap_status, _, overlap_error = invoke(
-        ["map", "staging"], store, stdin="yes\n"
+        ["update", "staging", "--local-root", "."], store, stdin="yes\n"
     )
     monkeypatch.chdir(separate)
-    declined = invoke(["prod", "map"], store)
-    remapped = invoke(["map", "prod"], store, stdin="yes\n")
-    remote_remapped = invoke(
-        ["map", "prod", "--remote-root", "/production"],
+    declined = invoke(["prod", "update", "--local-root", "."], store)
+    remapped = invoke(
+        ["update", "prod", "--local-root", ".", "-r", "/production"],
         store,
         stdin="yes\n",
     )
@@ -1876,25 +1875,19 @@ def test_map_confirms_replacement_and_rejects_overlapping_local_roots(
     assert str(root) in overlap_error and str(child) in overlap_error
     assert declined == (
         0,
-        "Change mapping for profile 'prod'?\n"
+        "Update profile 'prod'?\n"
         f"  Local root: {root} → {separate}\n"
-        "Continue? [y/N] Kept profile 'prod' mapping unchanged.\n",
+        "Continue? [y/N] Kept profile 'prod' unchanged.\n",
         "",
     )
     assert remapped == (
         0,
-        "Change mapping for profile 'prod'?\n"
-        f"  Local root: {root} → {separate}\n"
-        "Continue? [y/N] Updated profile 'prod' mapping:\n"
-        f"  Local root: {root} → {separate}\n",
-        "",
-    )
-    assert remote_remapped == (
-        0,
-        "Change mapping for profile 'prod'?\n"
+        "Update profile 'prod'?\n"
         "  Remote root: /prod → /production\n"
-        "Continue? [y/N] Updated profile 'prod' mapping:\n"
-        "  Remote root: /prod → /production\n",
+        f"  Local root: {root} → {separate}\n"
+        "Continue? [y/N] Updated profile 'prod':\n"
+        "  Remote root: /prod → /production\n"
+        f"  Local root: {root} → {separate}\n",
         "",
     )
     remapped_profile = store.load().profiles["prod"]
@@ -1902,6 +1895,45 @@ def test_map_confirms_replacement_and_rejects_overlapping_local_roots(
     assert remapped_profile.remote_root == "/production"
     assert remapped_profile.rules == (SyncRule(1, "exclude", "**/*.log"),)
     assert store.load().profiles["staging"].local_root == str(staging_root)
+    assert invoke(["update", "prod"], store)[2] == (
+        "hlsync: error: update needs a setting to change, such as --protocol "
+        "sftp or --local-root .; see 'hlsync help update'\n"
+    )
+
+
+def test_update_to_another_protocol_moves_only_default_settings(
+    tmp_path, monkeypatch
+) -> None:
+    store = ConfigurationStore(tmp_path / "configs.json")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PROD_FTPS_HOST", "ftp.example.com")
+    monkeypatch.setenv("PROD_SFTP_HOST", "vm.example.com")
+    invoke(
+        ["create", "prod", "-r", "site", "--username-env", "SITE_USER",
+         "--local-root", "."],
+        store,
+    )
+    assert invoke(["exclude", "*.log"], store)[0] == 0
+
+    updated = invoke(["update", "--protocol", "sftp"], store, stdin="y\n")
+
+    assert updated == (
+        0,
+        "Update profile 'prod'?\n"
+        "  Protocol: FTPS → SFTP\n"
+        "  Host: ftp.example.com → vm.example.com (from PROD_SFTP_HOST)\n"
+        "  Port: 21 → 22\n"
+        "  Password variable: PROD_FTPS_PASSWORD → PROD_SFTP_PASSWORD\n"
+        "Continue? [y/N] Updated profile 'prod':\n"
+        "  Protocol: FTPS → SFTP\n"
+        "  Host: ftp.example.com → vm.example.com (from PROD_SFTP_HOST)\n"
+        "  Port: 21 → 22\n"
+        "  Password variable: PROD_FTPS_PASSWORD → PROD_SFTP_PASSWORD\n",
+        "",
+    )
+    profile = store.load().profiles["prod"]
+    assert (profile.username_env, profile.remote_root) == ("SITE_USER", "site")
+    assert profile.rules == (SyncRule(1, "exclude", "**/*.log"),)
 
 
 def test_push_stops_at_the_first_failure_and_counts_what_did_not_start(

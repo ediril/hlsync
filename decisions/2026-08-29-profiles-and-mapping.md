@@ -23,9 +23,13 @@ Earlier runtime names and configuration schemas are not recognized or migrated.
 New profiles always record a local root. A profile without a local root cannot
 synchronize or own rules and must be completed through mapping.
 
-Mapping changes validate the complete proposed local-to-remote target and
-require explicit confirmation. They preserve the profile's rules, endpoint,
-and credential settings.
+Profile updates validate the complete proposed profile, including local-root
+overlap, and require explicit confirmation, because a changed root, endpoint,
+or protocol redirects every later transfer. They change only the given
+settings and preserve the profile's rules. A protocol change moves settings
+that are still on the old protocol's defaults to the new protocol's defaults,
+so one protocol's credential variables never follow a profile to another
+protocol's server.
 
 A profile-aware command either names a profile explicitly or resolves the one
 mapped root containing the current directory. No profile selection persists
@@ -52,7 +56,7 @@ the model. Current runtime names and CLI usage are documented in README and `doc
 - Creating a new unmapped profile.
 - A global or directory-scoped `use` setting.
 - Guessing a profile or falling back to the first configured profile.
-- Silently changing a mapping or editing endpoint settings through `map`.
+- Silently changing a profile's roots or endpoint.
 - Storing credential values in profile configuration.
 - Reading or migrating legacy runtime configuration and project schemas.
 - Connecting to or deleting remote content when a profile is removed.

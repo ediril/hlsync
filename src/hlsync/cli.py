@@ -131,7 +131,7 @@ class _PendingDiffOutput:
 CANONICAL_COMMANDS = (
     "create",
     "connect",
-    "map",
+    "update",
     "remove",
     "root",
     "cd",
@@ -152,7 +152,7 @@ COMMAND_ALIASES = {"ls": "list", "lsr": "list"}
 PROFILE_AWARE_COMMANDS = frozenset(
     {
         "connect",
-        "map",
+        "update",
         "remove",
         "root",
         "profile",
@@ -264,6 +264,57 @@ def _open_upload_sessions(
         message = f"Using {connections} {noun}."
     print(message, file=progress, flush=True)
     return tuple(opened)
+
+
+def _add_profile_options(parser: argparse.ArgumentParser, *, creating: bool) -> None:
+    """The profile settings that create records and update changes."""
+
+    def default(text: str) -> str:
+        return f"default: {text}" if creating else "default: unchanged"
+
+    parser.add_argument(
+        "--protocol",
+        choices=tuple(PROTOCOLS),
+        default="ftps" if creating else None,
+        help=f"transfer protocol ({default('ftps')})",
+    )
+    parser.add_argument(
+        "--host", help=f"server host ({default(_protocol_defaults('host_env'))})"
+    )
+    parser.add_argument(
+        "--port", type=int, help=f"server port ({default(_protocol_defaults('port'))})"
+    )
+    parser.add_argument(
+        "--username-env",
+        help=(
+            "username environment variable "
+            f"({default(_protocol_defaults('username_env'))})"
+        ),
+    )
+    parser.add_argument(
+        "--password-env",
+        help=(
+            "password environment variable "
+            f"({default(_protocol_defaults('password_env'))})"
+        ),
+    )
+    parser.add_argument(
+        "-r",
+        "--remote-root",
+        metavar="PATH",
+        required=creating,
+        help="server folder; a relative path starts at the login folder",
+    )
+    parser.add_argument(
+        "--local-root",
+        metavar="PATH",
+        help=(
+            "local profile directory; when omitted, offer the current "
+            "directory and prompt for another if declined"
+            if creating
+            else "local profile directory, such as . for the current one"
+        ),
+    )
 
 
 def _protocol_defaults(field: str) -> str:
@@ -404,53 +455,17 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser = subparsers.add_parser(
         "create",
         help="create an FTPS or SFTP profile with a mapped local root",
+        usage="hlsync create PROFILE -r PATH [OPTIONS]",
         description=(
             "Create a profile using environment-variable credentials; SFTP "
             "also uses your SSH keys. Without --local-root, choose the current "
             "or another directory."
         ),
     )
-    create_parser.add_argument("profile_name", help="new profile name")
     create_parser.add_argument(
-        "--host", help=f"server host (default: {_protocol_defaults('host_env')})"
+        "profile_name", metavar="PROFILE", help="new profile name"
     )
-    create_parser.add_argument(
-        "-r",
-        "--remote-root",
-        required=True,
-        help="server folder; a relative path starts at the login folder",
-    )
-    create_parser.add_argument(
-        "--protocol",
-        choices=tuple(PROTOCOLS),
-        default="ftps",
-        help="transfer protocol (default: ftps)",
-    )
-    create_parser.add_argument(
-        "--port", type=int, help=f"server port (default: {_protocol_defaults('port')})"
-    )
-    create_parser.add_argument(
-        "--username-env",
-        help=(
-            "username environment variable "
-            f"(default: {_protocol_defaults('username_env')})"
-        ),
-    )
-    create_parser.add_argument(
-        "--password-env",
-        help=(
-            "password environment variable "
-            f"(default: {_protocol_defaults('password_env')})"
-        ),
-    )
-    create_parser.add_argument(
-        "--local-root",
-        metavar="PATH",
-        help=(
-            "local profile directory; when omitted, offer the current "
-            "directory and prompt for another if declined"
-        ),
-    )
+    _add_profile_options(create_parser, creating=True)
 
     connect_parser = subparsers.add_parser(
         "connect",
@@ -462,35 +477,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     connect_parser.add_argument(
-        "profile_name", nargs="?", help="profile; inferred when omitted"
+        "profile_name",
+        nargs="?",
+        metavar="PROFILE",
+        help="profile name; inferred from the current directory when omitted",
     )
 
-    map_parser = subparsers.add_parser(
-        "map",
-        help="change a profile's local or remote root",
+    update_parser = subparsers.add_parser(
+        "update",
+        help="change a profile's connection or roots",
         usage=(
-            "hlsync map [PROFILE] [--local-root PATH] [-r PATH]\n"
-            "       hlsync PROFILE map [--local-root PATH] [-r PATH]"
+            "hlsync update [PROFILE] [OPTIONS]\n"
+            "       hlsync PROFILE update [OPTIONS]"
         ),
         description=(
-            "Change mapped roots after a [y/N] confirmation. Omitted roots stay "
-            "unchanged; with neither option, use the current local directory."
+            "Change the given settings after a [y/N] confirmation; others stay "
+            "unchanged, and rules are kept. Changing the protocol also moves "
+            "the host, port, and credential variables that are still on the "
+            "old protocol's defaults to the new protocol's defaults."
         ),
     )
-    map_parser.add_argument(
-        "profile_name", nargs="?", help="profile; inferred when omitted"
+    update_parser.add_argument(
+        "profile_name",
+        nargs="?",
+        metavar="PROFILE",
+        help="profile name; inferred from the current directory when omitted",
     )
-    map_parser.add_argument(
-        "--local-root",
-        metavar="PATH",
-        help="new local root; defaults to the current directory",
-    )
-    map_parser.add_argument(
-        "-r",
-        "--remote-root",
-        metavar="PATH",
-        help="new remote root, relative to the login folder unless absolute",
-    )
+    _add_profile_options(update_parser, creating=False)
 
     rule_change_help = {
         "exclude": "exclude paths from synchronization",
@@ -597,7 +610,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     remove_parser.add_argument(
-        "profile_name", nargs="?", help="profile; inferred when omitted"
+        "profile_name",
+        nargs="?",
+        metavar="PROFILE",
+        help="profile name; inferred from the current directory when omitted",
     )
 
     root_parser = subparsers.add_parser(
@@ -900,7 +916,6 @@ def _create_profile(
         username_env=arguments.username_env,
         password_env=arguments.password_env,
     )
-    configuration.profiles[name] = profile
     if arguments.local_root is not None:
         local_root = canonical_local_root(arguments.local_root)
     else:
@@ -922,11 +937,7 @@ def _create_profile(
             if supplied_root == "" or not supplied_root.strip():
                 raise ConfigurationError("a local folder is required")
             local_root = canonical_local_root(supplied_root.strip())
-    configuration.set_profile_roots(
-        name,
-        local_root=local_root,
-        remote_root=profile.remote_root,
-    )
+    configuration.set_profile(name, replace(profile, local_root=local_root))
     source = "" if arguments.host else f" on {host} (from {host_env})"
     message = (
         f"Created {profile.type.upper()} profile '{name}'{source}.\n"
@@ -1052,53 +1063,87 @@ def _report_connection(
         print(note, file=progress, flush=True)
 
 
-def _map(
+_UPDATE_OPTIONS = (
+    "protocol",
+    "host",
+    "port",
+    "username_env",
+    "password_env",
+    "remote_root",
+    "local_root",
+)
+
+
+def _update_profile(
     arguments: argparse.Namespace,
     store: ConfigurationStore,
     stdin: TextIO,
     stdout: TextIO,
 ) -> str:
     configuration, name, profile = _resolve_profile(arguments, store)
-    if arguments.local_root is not None:
-        local_root = canonical_local_root(arguments.local_root)
-    elif arguments.remote_root is None or profile.local_root is None:
-        local_root = canonical_local_root(Path.cwd())
-    else:
-        local_root = profile.local_root
-    remote_root = (
-        arguments.remote_root
-        if arguments.remote_root is not None
-        else profile.remote_root
-    )
-    candidate = profile.with_roots(
-        local_root=local_root,
-        remote_root=remote_root,
-    )
-    changes = []
-    if profile.local_root != candidate.local_root:
-        changes.append(
-            f"  Local root: {profile.local_root or 'not mapped'} "
-            f"→ {candidate.local_root}"
+    if all(getattr(arguments, option) is None for option in _UPDATE_OPTIONS):
+        raise ConfigurationError(
+            "update needs a setting to change, such as --protocol sftp or "
+            "--local-root .; see 'hlsync help update'"
         )
-    if profile.remote_root != candidate.remote_root:
-        changes.append(
-            f"  Remote root: {profile.remote_root} → {candidate.remote_root}"
-        )
-    if not changes:
-        return f"Profile '{name}' mapping is unchanged."
+    old = PROTOCOLS[profile.type]
+    new = PROTOCOLS[arguments.protocol or profile.type]
 
-    configuration.set_profile_roots(
-        name,
-        local_root=candidate.local_root,
-        remote_root=candidate.remote_root,
+    def carried(field: str, given: object) -> object:
+        """A given value wins; an old-protocol default moves to the new default."""
+        if given is not None:
+            return given
+        current = getattr(profile, field)
+        return getattr(new, field) if current == getattr(old, field) else current
+
+    host, host_source = arguments.host, ""
+    if host is None:
+        old_host = os.environ.get(old.host_env, "").strip()
+        new_host = os.environ.get(new.host_env, "").strip()
+        host = profile.host
+        if new is not old and new_host and profile.host == old_host:
+            host, host_source = new_host, f" (from {new.host_env})"
+    candidate = replace(
+        profile,
+        type=arguments.protocol or profile.type,
+        host=host,
+        port=carried("port", arguments.port),
+        username_env=carried("username_env", arguments.username_env),
+        password_env=carried("password_env", arguments.password_env),
+        remote_root=(
+            profile.remote_root
+            if arguments.remote_root is None
+            else arguments.remote_root
+        ),
+        local_root=(
+            profile.local_root
+            if arguments.local_root is None
+            else canonical_local_root(arguments.local_root)
+        ),
     )
-    prompt = "\n".join(
-        (f"Change mapping for profile '{name}'?", *changes, "Continue? [y/N] ")
+    labels = (
+        ("Protocol", lambda p: p.type.upper(), ""),
+        ("Host", lambda p: p.host, host_source),
+        ("Port", lambda p: p.port, ""),
+        ("Username variable", lambda p: p.username_env, ""),
+        ("Password variable", lambda p: p.password_env, ""),
+        ("Remote root", lambda p: p.remote_root, ""),
+        ("Local root", lambda p: p.local_root or "not mapped", ""),
     )
+    changes = [
+        f"  {label}: {value(profile)} → {value(candidate)}{source}"
+        for label, value, source in labels
+        if value(profile) != value(candidate)
+    ]
+    if not changes:
+        return f"Profile '{name}' is unchanged."
+
+    configuration.set_profile(name, candidate)
+    prompt = "\n".join((f"Update profile '{name}'?", *changes, "Continue? [y/N] "))
     if not _confirm(prompt, stdin, stdout, default=False):
-        return f"Kept profile '{name}' mapping unchanged."
+        return f"Kept profile '{name}' unchanged."
     store.save(configuration)
-    return "\n".join((f"Updated profile '{name}' mapping:", *changes))
+    return "\n".join((f"Updated profile '{name}':", *changes))
 
 
 def _format_rules(
@@ -3150,8 +3195,8 @@ def run(
             message = _create_profile(arguments, configuration_store, stdin, stdout)
         elif arguments.command == "connect":
             message = _connect(arguments, configuration_store)
-        elif arguments.command == "map":
-            message = _map(arguments, configuration_store, stdin, stdout)
+        elif arguments.command == "update":
+            message = _update_profile(arguments, configuration_store, stdin, stdout)
         elif arguments.command == "rules":
             message = (
                 _drop_rules(arguments, configuration_store)

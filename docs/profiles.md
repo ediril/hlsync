@@ -51,13 +51,22 @@ will create it.` and treat the remote as empty, so check that path for typos.
 and a missing parent, before uploading. A root path that exists but cannot be
 entered, such as a file or a folder without permission, still fails to connect.
 
-Use `map` to change either side after creation. Omit `--local-root` to use the
-current directory; changing only the remote root preserves the local root:
+Use `update` to change a profile after creation. It takes the same options as
+`create`, changes only the settings you give, shows the change, and asks for
+confirmation. Rules are kept:
 
 ```console
-hlsync map staging --local-root /new/local/path
-hlsync map staging --remote-root /new/remote/root
+hlsync update staging --local-root .            # map the current directory
+hlsync update staging -r /new/remote/root
+hlsync update staging --protocol sftp
 ```
+
+Changing the protocol also moves each setting that is still on the old
+protocol's default to the new protocol's default: the port (21 to 22), the
+credential variables (`PROD_FTPS_*` to `PROD_SFTP_*`), and the host when it
+matches the old protocol's host variable and the new one is set. Settings you
+chose yourself stay, so give `--port` or `--username-env` again if they change
+too.
 
 The normal workflow is to run HLSync inside a mapped root or one of its
 descendants. The current directory selects the containing profile and relative
@@ -119,6 +128,7 @@ export PROD_SFTP_USERNAME=deploy
 hlsync create blog --protocol sftp --host vm.example.com -r blog
 ```
 
+To switch an existing FTPS profile, run `hlsync update PROFILE --protocol sftp`.
 To prepare a server, see [Setting up a server for SFTP](sftp-server.md).
 
 SFTP logs in the way `ssh` does. HLSync offers, in order, the keys in your

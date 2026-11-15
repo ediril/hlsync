@@ -264,23 +264,6 @@ class ProfileConfiguration:
         if self.local_root is None and self.rules:
             raise ConfigurationError("an unmapped profile cannot have rules")
 
-    def with_roots(
-        self,
-        *,
-        local_root: str,
-        remote_root: str,
-    ) -> ProfileConfiguration:
-        return ProfileConfiguration(
-            host=self.host,
-            remote_root=remote_root,
-            port=self.port,
-            username_env=self.username_env,
-            password_env=self.password_env,
-            type=self.type,
-            local_root=local_root,
-            rules=self.rules,
-        )
-
     def with_rules(
         self,
         rules: tuple[SyncRule, ...],
@@ -386,28 +369,20 @@ class ApplicationConfiguration:
                         f"'{other_name}' root '{other_root}'"
                     )
 
-    def set_profile_roots(
-        self,
-        profile_name: str,
-        *,
-        local_root: str,
-        remote_root: str,
-    ) -> None:
-        profile = self.profiles[profile_name]
-        root = Path(local_root)
-        for other_name, other in self.profiles.items():
-            if other_name == profile_name or other.local_root is None:
-                continue
-            other_root = Path(other.local_root)
-            if _paths_overlap(root, other_root):
-                raise ConfigurationError(
-                    f"local root '{root}' for profile '{profile_name}' overlaps "
-                    f"profile '{other_name}' root '{other_root}'"
-                )
-        self.profiles[profile_name] = profile.with_roots(
-            local_root=local_root,
-            remote_root=remote_root,
-        )
+    def set_profile(self, profile_name: str, profile: ProfileConfiguration) -> None:
+        """Store a profile whose local root overlaps no other profile's."""
+        if profile.local_root is not None:
+            root = Path(profile.local_root)
+            for other_name, other in self.profiles.items():
+                if other_name == profile_name or other.local_root is None:
+                    continue
+                other_root = Path(other.local_root)
+                if _paths_overlap(root, other_root):
+                    raise ConfigurationError(
+                        f"local root '{root}' for profile '{profile_name}' "
+                        f"overlaps profile '{other_name}' root '{other_root}'"
+                    )
+        self.profiles[profile_name] = profile
 
     def append_rules(
         self,
