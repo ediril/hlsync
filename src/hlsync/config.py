@@ -15,11 +15,24 @@ CONFIG_VERSION = 9
 COMMON_RULES_VERSION = 1
 PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# Protocols and their default ports.
-PROTOCOLS = {"ftps": 21, "sftp": 22}
-DEFAULT_HOST_ENV = "PROD_FTPS_HOST"
-DEFAULT_USERNAME_ENV = "PROD_FTPS_USERNAME"
-DEFAULT_PASSWORD_ENV = "PROD_FTPS_PASSWORD"
+@dataclass(frozen=True)
+class ProtocolDefaults:
+    port: int
+    host_env: str
+    username_env: str
+    password_env: str
+
+
+# Each protocol has its own variables, so one protocol's secret is never
+# offered to another protocol's server.
+PROTOCOLS = {
+    "ftps": ProtocolDefaults(
+        21, "PROD_FTPS_HOST", "PROD_FTPS_USERNAME", "PROD_FTPS_PASSWORD"
+    ),
+    "sftp": ProtocolDefaults(
+        22, "PROD_SFTP_HOST", "PROD_SFTP_USERNAME", "PROD_SFTP_PASSWORD"
+    ),
+}
 DEFAULT_COMMON_RULES = (
     SyncRule(1, "exclude", "**/.git/**"),
     SyncRule(2, "exclude", "**/.svn/**"),
@@ -203,22 +216,26 @@ def _validate_rule_sequence(rules: tuple[SyncRule, ...]) -> tuple[SyncRule, ...]
 class ProfileConfiguration:
     host: str
     remote_root: str
-    port: int = 21
-    username_env: str = DEFAULT_USERNAME_ENV
-    password_env: str = DEFAULT_PASSWORD_ENV
+    port: int | None = None
+    username_env: str | None = None
+    password_env: str | None = None
     type: str = "ftps"
     local_root: str | None = None
     rules: tuple[SyncRule, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.type not in PROTOCOLS:
+            raise ConfigurationError("profile protocol must be 'ftps' or 'sftp'")
+        defaults = PROTOCOLS[self.type]
+        for name in ("port", "username_env", "password_env"):
+            if getattr(self, name) is None:
+                object.__setattr__(self, name, getattr(defaults, name))
         object.__setattr__(self, "host", _required_string(self.host, "host"))
         object.__setattr__(
             self,
             "remote_root",
             _normalize_remote_root(self.remote_root),
         )
-        if self.type not in PROTOCOLS:
-            raise ConfigurationError("profile protocol must be 'ftps' or 'sftp'")
         if isinstance(self.port, bool) or not isinstance(self.port, int):
             raise ConfigurationError("port must be an integer")
         if not 1 <= self.port <= 65535:

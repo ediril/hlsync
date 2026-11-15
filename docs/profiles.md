@@ -20,8 +20,8 @@ hlsync create staging \
   --password-env STAGING_FTPS_PASSWORD
 ```
 
-`--host` defaults to the `PROD_FTPS_HOST` environment variable, and
-`-r` is short for `--remote-root`. With the host set in your shell, a profile
+`--host` defaults to the `PROD_FTPS_HOST` environment variable
+(`PROD_SFTP_HOST` for SFTP profiles), and `-r` is short for `--remote-root`. With the host set in your shell, a profile
 needs only a name and a remote root:
 
 ```console
@@ -30,7 +30,7 @@ hlsync create staging -r /public_html/staging
 ```
 
 `create` copies the host into the profile and names it in its output, so later
-changes to `PROD_FTPS_HOST` do not affect existing profiles.
+changes to the variable do not affect existing profiles.
 
 HLSync stores the canonical absolute local root and maps every descendant to
 the same relative path under the remote root. Roots may not overlap across
@@ -107,14 +107,25 @@ No profile selection is persisted between commands.
 Create an SFTP profile with `--protocol sftp`. The port defaults to 22:
 
 ```console
+export PROD_SFTP_USERNAME=deploy
 hlsync create vm --protocol sftp --host vm.example.com -r /var/www/site
 ```
 
 SFTP logs in the way `ssh` does. HLSync offers, in order, the keys in your
 ssh-agent, any `IdentityFile` that `~/.ssh/config` lists for the host, and your
 default keys in `~/.ssh` (such as `id_ed25519`). The username comes from the
-profile's username variable (`PROD_FTPS_USERNAME` by default). A password is
-optional: when the profile's password variable is set, HLSync also offers it.
+profile's username variable. A password is optional: when the profile's
+password variable is set, HLSync also offers it.
+
+Each protocol has its own default variables, so an FTPS password is never
+offered to an SSH server:
+
+| Protocol | Host            | Username             | Password             | Port |
+| -------- | --------------- | -------------------- | -------------------- | ---- |
+| FTPS     | `PROD_FTPS_HOST` | `PROD_FTPS_USERNAME` | `PROD_FTPS_PASSWORD` | 21   |
+| SFTP     | `PROD_SFTP_HOST` | `PROD_SFTP_USERNAME` | `PROD_SFTP_PASSWORD` | 22   |
+
+With key login, an SFTP profile usually needs only `PROD_SFTP_USERNAME`.
 Other `~/.ssh/config` settings, such as `HostName`, `Port`, and `User`, are not
 applied; the profile records those itself.
 

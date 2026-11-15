@@ -25,8 +25,10 @@ and read back with STAT before installation, as with FTPS.
 Login follows the SSH client model: ssh-agent identities, `IdentityFile`
 entries that `~/.ssh/config` gives for the host, and default keys in `~/.ssh`.
 The password variable is optional and is offered when set. The username
-variable is required. Other `~/.ssh/config` options are not applied, because
-the profile records host, port, and username explicitly.
+variable is required. Each protocol has its own default host, username, and
+password variables (`PROD_SFTP_*` for SFTP), so one protocol's secret is never
+offered to another protocol's server. Other `~/.ssh/config` options are not
+applied, because the profile records host, port, and username explicitly.
 
 Host keys are verified against `~/.ssh/known_hosts`. Unknown hosts and changed
 keys are refused; HLSync never adds or updates host keys. The error names the

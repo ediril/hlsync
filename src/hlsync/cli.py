@@ -20,9 +20,6 @@ from hlsync.comparison import (
     mark_untraversed_directories,
 )
 from hlsync.config import (
-    DEFAULT_HOST_ENV,
-    DEFAULT_PASSWORD_ENV,
-    DEFAULT_USERNAME_ENV,
     PROTOCOLS,
     ApplicationConfiguration,
     CommonRuleStore,
@@ -269,6 +266,13 @@ def _open_upload_sessions(
     return tuple(opened)
 
 
+def _protocol_defaults(field: str) -> str:
+    return ", ".join(
+        f"{getattr(defaults, field)} for {protocol.upper()}"
+        for protocol, defaults in PROTOCOLS.items()
+    )
+
+
 def _open_transport(profile: ProfileConfiguration) -> RemoteTransport:
     if profile.type == "sftp":
         return SFTPTransport(profile)
@@ -408,7 +412,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create_parser.add_argument("profile_name", help="new profile name")
     create_parser.add_argument(
-        "--host", help=f"server host (default: ${DEFAULT_HOST_ENV})"
+        "--host", help=f"server host (default: {_protocol_defaults('host_env')})"
     )
     create_parser.add_argument(
         "-r", "--remote-root", required=True, help="absolute server directory"
@@ -420,15 +424,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="transfer protocol (default: ftps)",
     )
     create_parser.add_argument(
-        "--port", type=int, help="server port (default: 21 for FTPS, 22 for SFTP)"
+        "--port", type=int, help=f"server port (default: {_protocol_defaults('port')})"
     )
     create_parser.add_argument(
         "--username-env",
-        help=f"username environment variable (default: {DEFAULT_USERNAME_ENV})",
+        help=(
+            "username environment variable "
+            f"(default: {_protocol_defaults('username_env')})"
+        ),
     )
     create_parser.add_argument(
         "--password-env",
-        help=f"password environment variable (default: {DEFAULT_PASSWORD_ENV})",
+        help=(
+            "password environment variable "
+            f"(default: {_protocol_defaults('password_env')})"
+        ),
     )
     create_parser.add_argument(
         "--local-root",
@@ -876,24 +886,17 @@ def _create_profile(
     configuration = store.load()
     if name in configuration.profiles:
         raise ConfigurationError(f"profile '{name}' already exists")
-    host = arguments.host or os.environ.get(DEFAULT_HOST_ENV, "").strip()
+    host_env = PROTOCOLS[arguments.protocol].host_env
+    host = arguments.host or os.environ.get(host_env, "").strip()
     if not host:
-        raise ConfigurationError(f"create requires --host or {DEFAULT_HOST_ENV}")
+        raise ConfigurationError(f"create requires --host or {host_env}")
     profile = ProfileConfiguration(
         type=arguments.protocol,
         host=host,
         remote_root=arguments.remote_root,
-        port=arguments.port or PROTOCOLS[arguments.protocol],
-        username_env=(
-            arguments.username_env
-            if arguments.username_env is not None
-            else DEFAULT_USERNAME_ENV
-        ),
-        password_env=(
-            arguments.password_env
-            if arguments.password_env is not None
-            else DEFAULT_PASSWORD_ENV
-        ),
+        port=arguments.port,
+        username_env=arguments.username_env,
+        password_env=arguments.password_env,
     )
     configuration.profiles[name] = profile
     if arguments.local_root is not None:
@@ -922,7 +925,7 @@ def _create_profile(
         local_root=local_root,
         remote_root=profile.remote_root,
     )
-    source = "" if arguments.host else f" on {host} (from {DEFAULT_HOST_ENV})"
+    source = "" if arguments.host else f" on {host} (from {host_env})"
     message = (
         f"Created {profile.type.upper()} profile '{name}'{source}.\n"
         f"Mapped '{local_root}' to '{name}:{profile.remote_root}'."

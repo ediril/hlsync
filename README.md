@@ -52,7 +52,9 @@ PROD_FTPS_USERNAME
 PROD_FTPS_PASSWORD
 ```
 
-Set `PROD_FTPS_HOST` too and `create` can omit `--host`.
+Set `PROD_FTPS_HOST` too and `create` can omit `--host`. SFTP profiles use
+`PROD_SFTP_USERNAME`, `PROD_SFTP_PASSWORD` (optional with SSH keys), and
+`PROD_SFTP_HOST` instead.
 
 From the local project root:
 

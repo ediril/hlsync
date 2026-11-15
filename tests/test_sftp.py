@@ -65,8 +65,8 @@ def sftp_server(tmp_path, monkeypatch):
     known_hosts.write_text(f"[127.0.0.1]:{port} {public_host_key}\n")
     monkeypatch.setenv("HOME", os.fspath(home))
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
-    monkeypatch.setenv("PROD_FTPS_USERNAME", "deploy")
-    monkeypatch.setenv("PROD_FTPS_PASSWORD", "secret")
+    monkeypatch.setenv("PROD_SFTP_USERNAME", "deploy")
+    monkeypatch.setenv("PROD_SFTP_PASSWORD", "secret")
     yield port, remote, home, client_key
 
     async def stop():
@@ -94,11 +94,19 @@ def test_an_sftp_profile_creates_its_root_and_pushes_replaces_prunes_and_pulls(
         status = run(list(arguments), store=store, stdout=output, stderr=progress)
         return status, output.getvalue(), progress.getvalue()
 
+    monkeypatch.setenv("PROD_SFTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("PROD_FTPS_HOST", "ftp.unrelated.example")
     created = invoke(
-        "create", "prod", "--protocol", "sftp", "--host", "127.0.0.1",
-        "--port", str(port), "-r", "/site/current", "--local-root", str(local),
+        "create", "prod", "--protocol", "sftp", "--port", str(port),
+        "-r", "/site/current", "--local-root", str(local),
     )
-    assert created[1].startswith("Created SFTP profile 'prod'.\n")
+    assert created[1].startswith(
+        "Created SFTP profile 'prod' on 127.0.0.1 (from PROD_SFTP_HOST).\n"
+    )
+    profile = store.load().profiles["prod"]
+    assert (profile.port, profile.username_env, profile.password_env) == (
+        port, "PROD_SFTP_USERNAME", "PROD_SFTP_PASSWORD",
+    )
     assert invoke("connect")[1] == (
         "Verified secure connectivity to profile 'prod'.\n"
         "Remote root /site/current does not exist yet; push will create it.\n"
@@ -133,7 +141,7 @@ def test_an_sftp_profile_creates_its_root_and_pushes_replaces_prunes_and_pulls(
 
 
 def test_sftp_logs_in_with_keys_checks_host_keys_and_classifies_failures(
-    sftp_server,
+    sftp_server, monkeypatch
 ):
     port, remote, home, client_key = sftp_server
     profile = ProfileConfiguration(
@@ -142,7 +150,9 @@ def test_sftp_logs_in_with_keys_checks_host_keys_and_classifies_failures(
     key_file = home / ".ssh" / "id_ed25519"
     key_file.write_bytes(client_key.export_private_key("openssh"))
     key_file.chmod(0o600)
-    os.environ.pop("PROD_FTPS_PASSWORD")
+    monkeypatch.delenv("PROD_SFTP_PASSWORD")
+    # An FTPS profile's password must never be offered to an SSH server.
+    monkeypatch.setenv("PROD_FTPS_PASSWORD", "secret")
 
     with SFTPTransport(profile) as transport:
         assert transport.list_directory(PurePosixPath(), RuleSet()) == TreeSnapshot()
