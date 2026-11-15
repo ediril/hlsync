@@ -1,6 +1,6 @@
 # HLSync
 
-> HLSync is a command-line workflow for deploying local projects to shared hosting over explicit FTP over TLS (FTPS): map once, preview the diff, then push the intended files.
+> HLSync is a command-line workflow for deploying local projects to shared hosting or your own server over explicit FTP over TLS (FTPS) or SFTP: map once, preview the diff, then push the intended files.
 
 HLSync is for developers who want a safer, repeatable alternative to manual FTP without adopting a full deployment stack. The local project is authoritative; the remote server is a deployment target. Push retains remote-only paths by default; `-p` / `--prune` opts into deleting selected remote-only paths after uploads succeed.
 
@@ -11,7 +11,8 @@ HLSync is source-available under PolyForm Strict 1.0.0. Use is free of charge fo
 ## Documentation
 
 - [README](https://github.com/ediril/hlsync/blob/main/README.md): Installation, quick start, and a command overview.
-- [Profiles and mapping](https://github.com/ediril/hlsync/blob/main/docs/profiles.md): Profiles, credentials, and local and remote roots.
+- [Profiles and mapping](https://github.com/ediril/hlsync/blob/main/docs/profiles.md): Profiles, credentials, and local and remote roots, including SFTP login.
+- [Setting up a server for SFTP](https://github.com/ediril/hlsync/blob/main/docs/sftp-server.md): A deploy account, key login, and host-key verification on OpenSSH.
 - [Synchronization rules](https://github.com/ediril/hlsync/blob/main/docs/rules.md): Git ignores, common and profile rules, wildcards, and remote protection.
 - [Paths, traversal, and listing](https://github.com/ediril/hlsync/blob/main/docs/paths-and-listing.md): Path selection, recursion depth, and listing.
 - [Diff](https://github.com/ediril/hlsync/blob/main/docs/diff.md): Status markers and pruning previews.

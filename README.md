@@ -11,7 +11,8 @@ stable release.
 
 ## Who is it for?
 
-HLSync is for people who still deploy websites or small projects to shared hosting over FTP.
+HLSync is for people who still deploy websites or small projects to shared hosting over FTP,
+or to their own server over SFTP.
 
 If your current process is basically “figure out which files changed and upload them,” HLSync gives you a safer, more repeatable version of that workflow without requiring a full deployment system.
 
@@ -41,7 +42,9 @@ uploaded-file timestamps.
 
 SFTP works with any SSH server that offers the SFTP subsystem, such as OpenSSH.
 The server's host key must already be in `~/.ssh/known_hosts`. See
-[SFTP profiles](https://github.com/ediril/hlsync/blob/main/docs/profiles.md#sftp-profiles).
+[SFTP profiles](https://github.com/ediril/hlsync/blob/main/docs/profiles.md#sftp-profiles),
+and [Setting up a server for SFTP](https://github.com/ediril/hlsync/blob/main/docs/sftp-server.md)
+to prepare an OpenSSH server with a deploy account.
 
 ## Quick start
 
@@ -96,6 +99,8 @@ before it replaces the live file.
 - [Profiles and mapping](https://github.com/ediril/hlsync/blob/main/docs/profiles.md):
   profiles, credentials, local and remote roots, and running commands from
   anywhere.
+- [Setting up a server for SFTP](https://github.com/ediril/hlsync/blob/main/docs/sftp-server.md):
+  a deploy account, key login, and host-key verification on OpenSSH.
 - [Synchronization rules](https://github.com/ediril/hlsync/blob/main/docs/rules.md):
   `.gitignore` handling, common and profile rules, wildcards, and remote
   protection.

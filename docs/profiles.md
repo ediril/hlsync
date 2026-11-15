@@ -119,6 +119,8 @@ export PROD_SFTP_USERNAME=deploy
 hlsync create blog --protocol sftp --host vm.example.com -r blog
 ```
 
+To prepare a server, see [Setting up a server for SFTP](sftp-server.md).
+
 SFTP logs in the way `ssh` does. HLSync offers, in order, the keys in your
 ssh-agent, any `IdentityFile` that `~/.ssh/config` lists for the host, and your
 default keys in `~/.ssh` (such as `id_ed25519`). The username comes from the

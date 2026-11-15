@@ -4,7 +4,7 @@ declare(strict_types=1);
 $repository = 'https://github.com/ediril/hlsync';
 $year = (int) date('Y');
 $title = 'HLSync — a better way to "just FTP it"';
-$description = 'Map your local project once. Preview the diff. Push exactly what you intend to shared hosting over FTPS.';
+$description = 'Map your local project once. Preview the diff. Push exactly what you intend to shared hosting or your own server over FTPS or SFTP.';
 $requestHost = (string) ($_SERVER['HTTP_HOST'] ?? '');
 $validHost = preg_match('/\A[a-z0-9.-]+(?::[0-9]+)?\z/i', $requestHost) === 1;
 $forwardedProtocol = strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
@@ -135,7 +135,8 @@ function h(string $value): string
         <nav class="site-nav" id="site-nav" aria-label="Primary navigation" data-nav>
             <a href="#workflow">Workflow</a>
             <a href="#principles">Safety</a>
-            <a href="#pricing">Licensing &amp; pricing</a>
+            <a href="#pricing">Pricing</a>
+            <a href="https://pypi.org/project/hlsync/">PyPI <span aria-hidden="true">↗</span></a>
             <a class="nav-cta" href="<?= h($repository) ?>">GitHub <span aria-hidden="true">↗</span></a>
         </nav>
     </header>
@@ -147,14 +148,14 @@ function h(string $value): string
                 <h1>A better way to<br><span>“just FTP it.”</span></h1>
                 <p class="hero-lede">
                     Map your local project once. Preview the diff. Push exactly what
-                    you intend to shared hosting over FTPS.
+                    you intend to shared hosting or your own server over FTPS or SFTP.
                 </p>
 
                 <div class="hero-actions">
                     <div class="install-command" aria-label="Installation command">
                         <span aria-hidden="true">$</span>
-                        <code>pip install hlsync</code>
-                        <button type="button" data-copy="pip install hlsync">
+                        <code>uv tool install hlsync</code>
+                        <button type="button" data-copy="uv tool install hlsync">
                             <span data-copy-label>copy</span>
                         </button>
                     </div>
@@ -162,7 +163,7 @@ function h(string $value): string
                 </div>
 
                 <div class="hero-meta" aria-label="Project metadata">
-                    <div><span class="meta-label">transport</span><span class="meta-value">FTPS / explicit TLS</span></div>
+                    <div><span class="meta-label">transport</span><span class="meta-value">FTPS / SFTP</span></div>
                     <div><span class="meta-label">runtime</span><span class="meta-value">Python 3.10+</span></div>
                     <div><span class="meta-label">license</span><span class="meta-value">PolyForm Strict</span></div>
                 </div>
@@ -209,7 +210,7 @@ function h(string $value): string
 
         <section class="section workflow" id="workflow">
             <div class="section-heading">
-                <p class="eyebrow">01 // THE LOOP</p>
+                <p class="eyebrow">Workflow</p>
                 <h2>Map it once. Check the diff. Push.</h2>
                 <p>HLSync remembers where the project lives locally and remotely, then shows what will change before any files move.</p>
             </div>
@@ -247,12 +248,10 @@ function h(string $value): string
         </section>
 
         <section class="section principles" id="principles">
-            <div class="section-heading split-heading">
-                <div>
-                    <p class="eyebrow">02 // DESIGN SIGNAL</p>
-                    <h2>Safer than manual FTP.<br>Lighter than a deployment stack.</h2>
-                </div>
-                <p>HLSync keeps the familiar FTPS server you already have, while adding the project context, change preview, and deletion safeguards manual uploads are missing.</p>
+            <div class="section-heading wide-heading">
+                <p class="eyebrow">Safety</p>
+                <h2>Safer than manual FTP.<br>Lighter than a deployment stack.</h2>
+                <p>HLSync works with the FTPS or SFTP server you already have, while adding the project context, change preview, and deletion safeguards manual uploads are missing.</p>
             </div>
 
             <div class="principle-grid">
@@ -281,16 +280,16 @@ function h(string $value): string
                 </article>
                 <article class="principle principle-accent">
                     <span class="principle-index">D</span>
-                    <h3>Verified FTPS connections</h3>
-                    <p>HLSync verifies certificates, protects the data channel, and uses structured server listings over explicit TLS.</p>
+                    <h3>Verified, encrypted connections</h3>
+                    <p>HLSync checks FTPS certificates and SSH host keys before it logs in, and encrypts every listing and file transfer.</p>
                     <svg viewBox="0 0 160 80" aria-hidden="true"><path d="M4 60h34l15-36 28 46 19-30 14 20h42" /></svg>
                 </article>
             </div>
         </section>
 
         <section class="section pricing" id="pricing" aria-labelledby="pricing-title">
-            <div class="section-heading">
-                <p class="eyebrow">03 // LICENSING &amp; PRICING</p>
+            <div class="section-heading wide-heading">
+                <p class="eyebrow">Pricing</p>
                 <h2 id="pricing-title">Use under PolyForm Strict.<br>Commercial licensing available.</h2>
                 <p>PolyForm Strict 1.0.0 defines the uses available at no charge. Commercial use outside those permissions requires a separate paid agreement.</p>
             </div>
@@ -328,9 +327,7 @@ function h(string $value): string
     </main>
 
     <footer class="site-footer">
-        <a class="brand footer-brand" href="#top">HL<span>Sync</span></a>
-        <p>Built for the narrow gap between “just FTP it” and deployment infrastructure.</p>
-        <p>© <?= h((string) $year) ?> HLSync contributors // <a href="#pricing">Licensing &amp; pricing</a> // <a href="https://pypi.org/project/hlsync/">Latest release on PyPI ↗</a></p>
+        <p>© <?= h((string) $year) ?> HLSync contributors</p>
     </footer>
 </body>
 </html>

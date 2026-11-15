@@ -206,7 +206,7 @@
     the current noncommercial and paid commercial licensing policy.
 - [x] Add SFTP as a second transport on a shared staged-upload base, with
   SSH key or password login and known_hosts verification.
-- [ ] Verify SFTP against a real OpenSSH server on the user's VM: a deploy
+- [x] Verify SFTP against a real OpenSSH server on the user's VM: a deploy
   user, key login, a known_hosts entry, then connect, diff, push with `-j`,
   replacement, prune, and pull. Record any server behavior the asyncssh test
   server does not reproduce.
