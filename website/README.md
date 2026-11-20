@@ -1,7 +1,7 @@
 # HLSync website
 
-This directory is the complete shared-hosting document root. It requires PHP
-8.3 and Apache; there is no build step or package installation.
+This directory is the complete document root. It requires PHP 8.3 or later,
+served by nginx with PHP-FPM; there is no build step or package installation.
 
 To check it locally, serve it with PHP's built-in server at
 http://localhost:8000 (pass another port as the argument):
@@ -10,10 +10,10 @@ http://localhost:8000 (pass another port as the argument):
 ./scripts/run_server.sh
 ```
 
-Deploy the contents of `website/`, including `.htaccess`, directly into the
-site's configured remote document root. The page uses Google Fonts for Space
-Mono and IBM Plex Mono; Apache's content security policy permits only those
-font resources in addition to same-origin assets.
+Deploy the contents of `website/` directly into the site's configured remote
+document root. The site needs no routing rules: nginx serves `index.php` and
+the static files as they are. The page uses Google Fonts for Space Mono and
+IBM Plex Mono.
 
 The page derives its canonical URL from the validated request host and exposes
 Open Graph and Twitter large-image metadata for `assets/social-preview.jpg`.

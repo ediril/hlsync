@@ -64,6 +64,17 @@ Host HOST
   IdentityFile ~/.ssh/hlsync_deploy
 ```
 
+Once a host has an `IdentityFile` line, `ssh` no longer tries your default keys,
+such as `~/.ssh/id_ed25519`, for that host. If you also log in to the server
+as another account with a default key, list that key too, or that login falls
+back to asking for a password:
+
+```text
+Host HOST
+  IdentityFile ~/.ssh/hlsync_deploy
+  IdentityFile ~/.ssh/id_ed25519
+```
+
 ## 5. Verify the host key (your computer)
 
 HLSync connects only to servers listed in `~/.ssh/known_hosts`. Log in once
